@@ -11,7 +11,7 @@
     "ollama",
     "vllm"
   ],
-  "homepage": "https://github.com/maheidem/model-discovery",
+  "homepage": "https://github.com/Maheidem/model-discovery",
   "bugs": {
     "url": "https://github.com/maheidem/model-discovery/issues"
   },
