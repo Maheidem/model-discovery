@@ -271,8 +271,11 @@ export default async function (pi: ExtensionAPI) {
 			// oMLX uses chat_template_kwargs for reasoning toggling
 			if (compat.thinkingFormat === undefined) compat.thinkingFormat = "qwen-chat-template";
 			if (compat.supportsReasoningEffort === undefined) compat.supportsReasoningEffort = true;
-			console.log(`[model-discovery] oMLX compat for ${provider.name}:`, JSON.stringify({ thinkingFormat: compat.thinkingFormat, supportsReasoningEffort: compat.supportsReasoningEffort }));
 		}
+
+		// NOTE: Pi's applyExtension() spreads model definitions but does NOT merge
+		// provider-level compat into individual models. So we must attach compat
+		// to each model directly — otherwise getCompat(model) returns no thinkingFormat.
 
 		const configs = models.map(extractModelConfig);
 		const piModels = configs.map((c) => {
@@ -290,6 +293,7 @@ export default async function (pi: ExtensionAPI) {
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				contextWindow: ov?.contextWindow ?? c.contextWindow ?? provider.defaultContextWindow ?? 128_000,
 				maxTokens: ov?.maxTokens ?? c.maxTokens ?? provider.defaultMaxTokens ?? 16_384,
+				compat: compat, // attach compat to each model (Pi's applyExtension doesn't merge provider-level compat)
 			};
 		});
 
