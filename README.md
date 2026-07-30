@@ -6,6 +6,7 @@ Interactive TUI for discovering and managing local AI model endpoints. Works wit
 
 - **Auto-detect** server type from headers and model data (no manual config)
 - **Read real server-reported configs** — context window, max tokens, reasoning flags, input modalities
+- **Auto-detect reasoning format** — oMLX servers get `chat_template_kwargs` thinking support automatically
 - **Fine-tune per-model overrides** — set context window, max tokens, reasoning toggles
 - **Multi-endpoint management** — add, scan, and register multiple local servers
 - **LLM-callable tool** — the `discover_models` tool lets the agent discover endpoints on your behalf

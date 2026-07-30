@@ -266,16 +266,25 @@ export default async function (pi: ExtensionAPI) {
 		const compat: Record<string, unknown> = { ...provider.compat };
 		if (serverType === "llama.cpp" || serverType === "oMLX" || serverType === "Ollama") {
 			if (compat.supportsDeveloperRole === undefined) compat.supportsDeveloperRole = false;
-			if (compat.supportsReasoningEffort === undefined) compat.supportsReasoningEffort = false;
+		}
+		if (serverType === "oMLX") {
+			// oMLX uses chat_template_kwargs for reasoning toggling
+			if (compat.thinkingFormat === undefined) compat.thinkingFormat = "qwen-chat-template";
+			if (compat.supportsReasoningEffort === undefined) compat.supportsReasoningEffort = true;
 		}
 
 		const configs = models.map(extractModelConfig);
 		const piModels = configs.map((c) => {
 			const ov = provider.modelOverrides?.[c.id];
+			// For oMLX, auto-detect reasoning capability on Qwen models
+			const serverReasoning =
+				serverType === "oMLX" && !c.reasoning
+					? /^qwen/i.test(c.id) || /^qwen/i.test(c.name)
+					: false;
 			return {
 				id: c.id,
 				name: c.name,
-				reasoning: ov?.reasoning ?? c.reasoning ?? false,
+				reasoning: ov?.reasoning ?? c.reasoning ?? serverReasoning,
 				input: ov?.input ?? c.input ?? ["text"],
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				contextWindow: ov?.contextWindow ?? c.contextWindow ?? provider.defaultContextWindow ?? 128_000,
