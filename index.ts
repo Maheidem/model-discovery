@@ -191,20 +191,65 @@ function extractModelConfig(raw: Record<string, unknown>): ModelConfig {
 
 	// Input modalities
 	let input: string[] | null = null;
+	let hasVision = false;
+
+	// 1. Standard architecture.input_modalities (vLLM, SGLang, etc.)
 	if (raw.architecture && typeof raw.architecture === "object") {
-		const modalities = (raw.architecture as Record<string, unknown>).input_modalities as string[] | undefined;
+		const arch = raw.architecture as Record<string, unknown>;
+		const modalities = arch.input_modalities as string[] | undefined;
 		if (Array.isArray(modalities) && modalities.length > 0) {
 			input = [];
 			for (const m of modalities) {
 				const l = m.toLowerCase();
 				if (l.includes("text") && !input.includes("text")) input.push("text");
-				if ((l.includes("image") || l.includes("vision")) && !input.includes("image")) input.push("image");
+				if ((l.includes("image") || l.includes("vision")) && !input.includes("image")) {
+					input.push("image");
+					hasVision = true;
+				}
+			}
+		}
+		// Also check for vision-specific architecture keys
+		if (!hasVision && (arch.vision_config || arch.vision_model || arch.mm_proj || arch.multi_modal_projector)) {
+			hasVision = true;
+		}
+	}
+
+	// 2. Direct input array on the model object
+	if (!input && Array.isArray(raw.input)) {
+		input = raw.input as string[];
+		if (input.includes("image")) hasVision = true;
+	}
+
+	// 3. llama.cpp: --mmproj flag in args or preset (multimodal projector file)
+	if (!hasVision && args) {
+		for (const a of args) {
+			if (a.startsWith("--mmproj") || a.startsWith("--vision")) {
+				hasVision = true;
+				break;
 			}
 		}
 	}
-	if (!input && Array.isArray(raw.input)) input = raw.input as string[];
-	if (input && !input.includes("image") && args?.some((a) => a.startsWith("--mmproj"))) {
-		input.push("image");
+	if (!hasVision && preset) {
+		if (/mmproj|vision/i.test(preset)) {
+			hasVision = true;
+		}
+	}
+
+	// 4. oMLX: check for vision-specific capabilities or model tags
+	if (!hasVision && Array.isArray(raw.capabilities)) {
+		const caps = (raw.capabilities as string[]).map((c: string) => c.toLowerCase());
+		if (caps.some((c: string) => c.includes("vision") || c.includes("image") || c.includes("multimodal"))) {
+			hasVision = true;
+		}
+	}
+
+	// 5. Build final input array — always include "text", add "image" if vision detected
+	if (hasVision) {
+		input = input && input.includes("image") ? input : ["text", "image"];
+	} else if (!input) {
+		input = ["text"];
+	} else if (!input.includes("text")) {
+		input.unshift("text");
 	}
 
 	const loaded = status?.value === "loaded" ? true : status?.value === "unloaded" ? false : undefined;
@@ -454,6 +499,11 @@ export default async function (pi: ExtensionAPI) {
 					label: "Toggle reasoning",
 					description: `current: ${effReasoning === null ? "unknown" : effReasoning ? "on" : "off"}`,
 				},
+				{
+					value: "input",
+					label: "Toggle vision (image input)",
+					description: `current: ${effInput.includes("image") ? "vision on" : "text only"}`,
+				},
 			];
 			if (Object.keys(ov).length > 0) {
 				items.push({ value: "clear", label: "Clear overrides", description: "revert to server-reported values" });
@@ -477,6 +527,16 @@ export default async function (pi: ExtensionAPI) {
 				provider.modelOverrides = {
 					...provider.modelOverrides,
 					[config.id]: { ...ov, reasoning: !(effReasoning ?? false) },
+				};
+			} else if (action === "input") {
+				// Toggle vision: add/remove "image" from input modalities
+				const hasVision = effInput.includes("image");
+				const newInput = hasVision
+					? ["text"]
+					: [...new Set([...effInput, "image"])]; // ensure both text and image
+				provider.modelOverrides = {
+					...provider.modelOverrides,
+					[config.id]: { ...ov, input: newInput },
 				};
 			} else if (action === "clear") {
 				if (provider.modelOverrides) {
