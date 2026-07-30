@@ -271,6 +271,7 @@ export default async function (pi: ExtensionAPI) {
 			// oMLX uses chat_template_kwargs for reasoning toggling
 			if (compat.thinkingFormat === undefined) compat.thinkingFormat = "qwen-chat-template";
 			if (compat.supportsReasoningEffort === undefined) compat.supportsReasoningEffort = true;
+			console.log(`[model-discovery] oMLX compat for ${provider.name}:`, JSON.stringify({ thinkingFormat: compat.thinkingFormat, supportsReasoningEffort: compat.supportsReasoningEffort }));
 		}
 
 		const configs = models.map(extractModelConfig);
