@@ -5,8 +5,11 @@ Interactive TUI for discovering and managing local AI model endpoints. Works wit
 ## Features
 
 - **Auto-detect server type** from headers and model data
-- **Read server-reported configuration** — context window, max tokens, reasoning flags, and input modalities
+- **Read server-reported configuration** — context window, max tokens, reasoning, and vision, with per-model overrides on top
+- **Auto-detect vision-capable models (VLMs)** — from architecture metadata, llama.cpp `--mmproj` args, or oMLX capabilities
+- **Auto-detect reasoning capability** — from `capabilities`, explicit `reasoning` fields, `--reasoning-budget`, and Qwen model names on oMLX
 - **Auto-detect reasoning format** — oMLX servers get `chat_template_kwargs` thinking support automatically
+- **Per-model compatibility** — `supportsDeveloperRole: false` for llama.cpp, oMLX, and Ollama; Qwen thinking format for oMLX
 - **Fine-tune per-model overrides** — context window, max output, reasoning, and vision support
 - **Profile-routed native thinking levels** — Shift-Tab can select complete thinking and sampling presets
 - **Named model presets** — reuse complete thinking/sampling bundles as fixed aliases or adaptive routes
@@ -52,6 +55,28 @@ discover_models(url="http://192.168.1.100:8080", providerName="my-llama")
 ```
 
 The tool also accepts `apiKey`, but literal tool arguments may be retained in the agent session. Prefer the masked `/discover` flow for secrets.
+
+## How model settings are detected
+
+Every field is read from what the server actually reports, first value found wins:
+
+- **Context window** — `context_length` → `context_window` → `max_model_len` → `max_context_len` → `max_context_length` → llama.cpp `--ctx-size` (args or preset) → `meta.n_ctx` for loaded models → the source's default context window → `128000`
+- **Max output tokens** — `max_tokens` → `max_output_tokens` → `max_completion_tokens` → llama.cpp `--n-predict` → the source's default → `16384`
+- **Reasoning** — `capabilities` containing `reasoning` → an explicit `reasoning` field → llama.cpp `--reasoning-budget` ≠ 0 → Qwen model names on oMLX (when the server reports nothing)
+- **Vision** — `architecture.input_modalities` (vLLM, SGLang), vision-specific architecture keys (`vision_config`, `vision_model`, `mm_proj`, `multi_modal_projector`), llama.cpp `--mmproj`/`--vision` args or a preset name mentioning mmproj/vision, and oMLX `capabilities` containing `vision`, `image`, or `multimodal`
+
+Detected vision-capable models get `input: ["text", "image"]`, so Pi accepts image input for them. The source defaults and every detection can be corrected per model with **Edit model**.
+
+### Compatibility settings
+
+The extension attaches `compat` to each registered model (Pi does not merge provider-level compat into individual models):
+
+- llama.cpp, oMLX, Ollama: `supportsDeveloperRole: false`
+- oMLX: `thinkingFormat: "qwen-chat-template"` and `supportsReasoningEffort: true` for base models; fixed and adaptive profile aliases carry their own complete `chat_template_kwargs` independently
+
+### Model list display
+
+Each model shows `ctx <window> · max <tokens> · <source>`, where source is `server args` for a live llama.cpp process and `api` for other backends. Flags: `[vision]`, `[reasoning]`, `[reasoning?]` (undetermined and not overridden), `[loaded]` (llama.cpp, currently in memory), and `(edited)` when overrides are present.
 
 ## Native thinking levels
 
