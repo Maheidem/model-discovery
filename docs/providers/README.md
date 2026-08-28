@@ -12,12 +12,12 @@ mlx-lm / MTPLX) the server source code.
 
 | Provider | Default port | Doc | Plugin status today |
 | --- | --- | --- | --- |
-| llama.cpp (`llama-server`) | 8080 | [llama-cpp.md](llama-cpp.md) | ✅ detected, partially exploited |
+| llama.cpp (`llama-server`) | 8080 | [llama-cpp.md](llama-cpp.md) | ✅ detected + `/props` enrichment |
 | vLLM | 8000 | [vllm.md](vllm.md) | ✅ detected, metadata gap |
-| Ollama | 11434 | [ollama.md](ollama.md) | ✅ detected, sampling gap |
+| Ollama | 11434 | [ollama.md](ollama.md) | ✅ detected + `/api/tags` enrichment, sampling gap |
 | LM Studio | 1234 | [lm-studio.md](lm-studio.md) | ✅ detected, metadata gap |
-| oMLX | 8000 | [omlx.md](omlx.md) | ✅ best-supported (own server) |
-| MTPLX | 8000 | [mtplx.md](mtplx.md) | ⚠️ undetected (falls back to generic) |
+| oMLX | 8000 | [omlx.md](omlx.md) | ✅ best-supported (own server + status enrichment) |
+| MTPLX | 8000 | [mtplx.md](mtplx.md) | ✅ detected via `capability` field (0.7.0) |
 | SGLang | 30000 | [sglang.md](sglang.md) | ✅ detected, thinking gap |
 | mlx-lm (official MLX) | 8080 | [mlx-lm.md](mlx-lm.md) | ⚠️ undetected, no metadata |
 | LocalAI / KoboldCpp / Jan / TGI / mlx-openai-server | — | [other.md](other.md) | ⚠️ generic only |
@@ -30,39 +30,56 @@ mlx-lm / MTPLX) the server source code.
    - `Server` header containing `llama-cpp`/`llama.cpp`, `ollama`, `vllm`, `sglang`,
      `lm-studio`/`lmstudio`, `omlx`; `X-Powered-By: omlx`
    - `owned_by` fallbacks: `omlx`, `vllm`, `llamacpp`
+   - **`capability` field on `/v1/models` entries → MTPLX** (0.7.0)
    - model ids containing `:` → Ollama
    - else `OpenAI-compatible`
-3. **Extract per-model config** (first value found wins):
+3. **Native-endpoint enrichment** (`enrichModels`, 0.7.0) — one best-effort pass, fills
+   only what `/v1/models` omitted, never fails the scan (1s timeout per endpoint):
+   - llama.cpp `GET /props` → runtime `n_ctx` + `modalities.vision`
+   - oMLX `GET /v1/models/status` → effective `max_context_window`, `max_tokens`,
+     `loaded`, `thinking_default` (matched by physical id *and* user alias)
+   - Ollama `GET /api/tags` + `GET /api/ps` → default `context_length`, loaded set
+4. **Extract per-model config** (first value found wins):
    - context window: `context_length` → `context_window` → `max_model_len` →
      `max_context_len` → `max_context_length` → `status.args --ctx-size` →
      `status.preset ctx-size` → `meta.n_ctx` → source default → 128000
    - max output: `max_tokens` → `max_output_tokens` → `max_completion_tokens` →
      `status.args --n-predict` → source default → 16384
    - reasoning: `capabilities` incl. `reasoning` → `reasoning` field →
-     `--reasoning-budget` ≠ 0 → (oMLX only) Qwen-name heuristic
+     `--reasoning-budget` ≠ 0 → (oMLX only) Qwen-name heuristic → oMLX status `thinking_default`
    - vision: `architecture.input_modalities` → vision architecture keys
      (`vision_config`, `vision_model`, `mm_proj`, `multi_modal_projector`) →
-     `--mmproj`/`--vision` args or preset name → oMLX `capabilities`
-4. **Register with Pi** with per-model `compat`:
+     `--mmproj`/`--vision` args or preset name → oMLX `capabilities` → enrichment `vision`
+   - the context/max-token chains end with **enrichment** before the source default
+5. **Register with Pi** with per-model `compat`:
    - llama.cpp / oMLX / Ollama: `supportsDeveloperRole: false`
    - oMLX: `thinkingFormat: "qwen-chat-template"`, `supportsReasoningEffort: true`
-5. **Profiles** (0.6.0): named thinking/sampling bundles; wire key for repetition penalty
+6. **Profiles** (0.6.0): named thinking/sampling bundles; wire key for repetition penalty
    is chosen by server type (`repeat_penalty` for llama.cpp/LM Studio,
    `repetition_penalty` for oMLX/vLLM/SGLang, best-effort for Ollama/generic).
 
-## Gap summary (tuning opportunities, ranked)
+## Done in 0.7.0 (native-endpoint enrichment)
+
+| # | Provider | What changed |
+| --- | --- | --- |
+| 1 | llama.cpp | `/props` probed: real runtime `n_ctx` (no more 128000 fallback on single-model servers) + authoritative `modalities.vision` VLM flag |
+| 3 | oMLX | `/v1/models/status` probed: effective per-model context + max tokens, `[loaded]` flag, `thinking_default` → reasoning detection (alias-aware matching) |
+| 4 | Ollama | `/api/tags` + `/api/ps` probed: default context from model cards + `[loaded]` flag |
+| 6 | MTPLX | Detected via the `capability` field on `/v1/models` entries (still generic if a build omits it on chat entries) |
+
+All enrichment is silent best-effort (404/connection refusal/timeout leaves the
+catalogue untouched) and is covered by `enrichment.test.ts` (local HTTP fixtures).
+
+## Remaining gaps (next tuning candidates, ranked)
 
 | # | Provider | Gap | What's available but unused |
 | --- | --- | --- | --- |
-| 1 | llama.cpp | Single-model `/v1/models` carries **no context info** — plugin silently falls back to 128000 | `GET /props` exposes `default_generation_settings.n_ctx`, full sampling params, `modalities.vision`, `chat_template`; multi-model router exposes `GET /models` (the `status.args` / `architecture` shapes the plugin already parses!) |
 | 2 | vLLM | `/v1/models` has no context info → 128000 fallback | server was started with `--max-model-len`; some builds expose `/get_model_info` (verify at runtime); top-level `reasoning_effort` + `--reasoning-parser` thinking could be detected/advertised |
-| 3 | oMLX | `/v1/models/status` gives per-model `max_context_window`, `max_tokens`, load status — unused | also `/v1/models/{id}/load\|unload`, `/api/status`, model downloader; per-model `capabilities` already used |
-| 4 | Ollama | OpenAI layer supports only `top_p`, `frequency/presence penalty`, no `top_k`/`min_p`/repeat penalty (known, documented in README) | **native API** (`/api/show`, `/api/tags`, `/api/ps`) reports context length, parameter defaults, loaded models — far richer discovery surface |
 | 5 | LM Studio | `/v1/models` has no context info → 128000 fallback | native REST API (`/api/v0/...`) lists loaded models with context; chat completions explicitly accept `top_k` + `repeat_penalty` |
-| 6 | MTPLX | No detection signal → "OpenAI-compatible" | `/v1/models?capability=...` returns `capability` field; `/health`, `/metrics` exist; sampler surface = `temperature`, `top_p`, `top_k`, penalties |
-| 7 | mlx-lm | No detection signal, zero metadata in `/v1/models` | only `--model` CLI arg; would need heuristic (e.g. single model + `created` epoch + no other signals) or a user-supplied type hint |
-| 8 | SGLang | thinking via `chat_template_kwargs` + `--reasoning-parser` not advertised | could map `reasoning_content` support per parser like oMLX's Qwen special-case |
-| 9 | all | `discover_models` tool and scan share `fetchModels`; a richer probe (props/status/native endpoints) would need to be optional per detected type | — |
+| 7 | mlx-lm | No detection signal, zero metadata | needs a **manual server-type field** in the TUI (would also help Jan/LocalAI/KoboldCpp/TGI) |
+| 8 | SGLang | thinking via `chat_template_kwargs` + `--reasoning-parser` not advertised | map `reasoning_content` support per parser like oMLX's Qwen special-case (TUI toggle) |
+| 9 | Ollama | OpenAI layer still blocks `top_k`/`min_p`/repeat penalty (documented) | **native `/api/chat`** accepts all of them in `options` — a backend migration, not a config flip |
+| 10 | llama.cpp | multi-model router: `GET /models` (unloaded models, per-model `status.args`) not probed | the shapes are already parsed when a router forwards them through `/v1/models` |
 
 ## Conventions used in the per-provider docs
 

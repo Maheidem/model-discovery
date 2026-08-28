@@ -113,10 +113,11 @@ Token counting: `POST /v1/chat/completions/input_tokens`, `POST /v1/responses/in
 
 ## Gaps / tuning work
 
-1. **Read `/props` when type = llama.cpp**: `n_ctx` (context), `modalities.vision` (VLM),
-   `default_generation_settings.params` (server sampling defaults — useful as *hints* in the TUI).
-2. **Router mode**: probe `GET /models` for the full catalogue (unloaded models visible,
+> **Status 0.7.0:** `/props` is now probed (enrichment) — runtime `n_ctx` and
+> `modalities.vision` feed the context/vision detection chains.
+
+1. **Router mode**: probe `GET /models` for the full catalogue (unloaded models visible,
    per-model `status.args` already parsed).
-3. Consider `GET /health` for the re-scan "last success" UX and `/metrics` for a future
+2. Consider `GET /health` for the re-scan "last success" UX and `/metrics` for a future
    "is it actually busy" indicator.
-4. Keep the existing `repeat_penalty` wire key (llama.cpp expects `repeat_penalty`).
+3. Keep the existing `repeat_penalty` wire key (llama.cpp expects `repeat_penalty`).

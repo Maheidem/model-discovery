@@ -94,13 +94,13 @@ Full set including `temperature`, `top_p`, `top_k`, `min_p`, penalties — the p
 
 ## Gaps / tuning work
 
-1. **Read `/v1/models/status`** (this is the single highest-value change): get the
-   *effective* `max_context_window` and `max_tokens` instead of only `max_model_len`,
-   plus load state for the `[loaded]`-style flag and per-model `max_tokens` override.
-2. **Load/unload actions** in the TUI (map to the existing "Re-scan" flow or a new
+> **Status 0.7.0:** `/v1/models/status` is now probed (enrichment) — effective context,
+> per-model max tokens, `[loaded]` flag, and `thinking_default` → reasoning.
+
+1. **Load/unload actions** in the TUI (map to the existing "Re-scan" flow or a new
    "Manage models" section).
-3. The `max_context_window_policy` concept suggests a **source-level "context policy"**
+2. The `max_context_window_policy` concept suggests a **source-level "context policy"**
    setting in the plugin (clamp discovered contexts to N) — oMLX does this per-model;
    we could mirror it at source level.
-4. Favorites: `/v1/models/status` exposes `is_favorite` — could sort or badge them in
+3. Favorites: `/v1/models/status` exposes `is_favorite` — could sort or badge them in
    the TUI model list.

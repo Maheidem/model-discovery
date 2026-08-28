@@ -1,6 +1,6 @@
 {
   "name": "@maheidem/model-discovery",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "type": "module",
   "description": "Interactive TUI for discovering local AI endpoints and defining named thinking/sampling profiles (llama.cpp, oMLX, Ollama, vLLM, SGLang, LM Studio).",
   "keywords": [
@@ -19,7 +19,7 @@
     "url": "https://github.com/maheidem/model-discovery/issues"
   },
   "scripts": {
-    "test": "node --experimental-strip-types --test profiles.test.ts offline.test.ts"
+    "test": "node --experimental-strip-types --test profiles.test.ts offline.test.ts enrichment.test.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.84.0",
@@ -27,6 +27,8 @@
     "typebox": "*"
   },
   "pi": {
-    "extensions": ["index.ts"]
+    "extensions": [
+      "index.ts"
+    ]
   }
 }

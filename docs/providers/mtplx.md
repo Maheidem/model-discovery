@@ -19,13 +19,11 @@
 
 ## Detection
 
-- **No known `Server` header / `owned_by` signal documented** → the plugin currently
-  classifies it as generic `OpenAI-compatible`. **Gap #6.**
-- Candidate signals to verify at runtime:
-  - `GET /health` response shape
-  - `GET /v1/models?capability=embedding|rerank` — entries carry a **`capability` field**
-    (chat entries presumably `chat` or absent) — a distinctive, low-cost probe
-  - `GET /metrics` presence
+- **0.7.0:** `/v1/models` entries carrying a `capability` field are detected as MTPLX.
+  If a server build omits the field on chat entries, detection stays generic — a manual
+  server-type override (next phase) is the fallback.
+- Other candidate signals (verify at runtime): `GET /health` response shape, `GET
+  /metrics` presence.
 
 ## Model discovery
 
@@ -75,15 +73,11 @@ MLX releases) are refused with 403 until `--retrieval-trust-remote-code`.
 
 ## Gaps / tuning work
 
-1. **Detection**: probe `GET /v1/models?capability=chat` (or plain `/v1/models`) and
-   treat a `capability` field on entries as an MTPLX signal; optionally confirm with
-   `/metrics`. Adds a proper `serverType` so the right wire keys/compat apply.
-2. **Wire keys**: with type known, decide the repetition-penalty key (currently
-   "best-effort" for generic) — test whether MTPLX accepts `repetition_penalty`.
-3. **Sampler profile**: the documented surface is narrow (`temperature`, `top_p`, `top_k`,
+1. **Sampler profile**: the documented surface is narrow (`temperature`, `top_p`, `top_k`,
    two penalties). The TUI's profile editor could dim `min_p`/`repetitionPenalty` for
-   MTPLX sources (like the Ollama case) once detection lands.
-4. **No context metadata** — keep the 128000 fallback; MTPLX's own context handling is
+   MTPLX sources (like the Ollama case) now that detection lands — first verify at
+   runtime whether `repetition_penalty` is accepted.
+2. **No context metadata** — keep the 128000 fallback; MTPLX's own context handling is
    internal (Sustained mode does chunked prefill up to 16K–200K).
-5. Embeddings/rerank are out of scope for this plugin (it manages chat models) but the
+3. Embeddings/rerank are out of scope for this plugin (it manages chat models) but the
    `capability` probe is a free byproduct.

@@ -4,8 +4,9 @@ Interactive TUI for discovering and managing local AI model endpoints. Works wit
 
 ## Features
 
-- **Auto-detect server type** from headers and model data
+- **Auto-detect server type** from headers and model data (incl. MTPLX's `capability` field)
 - **Read server-reported configuration** — context window, max tokens, reasoning, and vision, with per-model overrides on top
+- **Native-endpoint enrichment** — llama.cpp `/props`, oMLX `/v1/models/status`, and Ollama `/api/tags` + `/api/ps` fill in what the OpenAI layer omits (real context windows, load state, VLM flags), silently best-effort
 - **Auto-detect vision-capable models (VLMs)** — from architecture metadata, llama.cpp `--mmproj` args, or oMLX capabilities
 - **Auto-detect reasoning capability** — from `capabilities`, explicit `reasoning` fields, `--reasoning-budget`, and Qwen model names on oMLX
 - **Auto-detect reasoning format** — oMLX servers get `chat_template_kwargs` thinking support automatically
@@ -26,7 +27,7 @@ Interactive TUI for discovering and managing local AI model endpoints. Works wit
 pi install npm:@maheidem/model-discovery
 
 # Via git
-pi install git:github.com/Maheidem/model-discovery@v0.6.1
+pi install git:github.com/Maheidem/model-discovery@v0.7.0
 ```
 
 ## Usage
@@ -66,6 +67,16 @@ Every field is read from what the server actually reports, first value found win
 - **Vision** — `architecture.input_modalities` (vLLM, SGLang), vision-specific architecture keys (`vision_config`, `vision_model`, `mm_proj`, `multi_modal_projector`), llama.cpp `--mmproj`/`--vision` args or a preset name mentioning mmproj/vision, and oMLX `capabilities` containing `vision`, `image`, or `multimodal`
 
 Detected vision-capable models get `input: ["text", "image"]`, so Pi accepts image input for them. The source defaults and every detection can be corrected per model with **Edit model**.
+
+### Native-endpoint enrichment
+
+For server types that expose richer *native* (non-OpenAI) endpoints, the probe runs one best-effort enrichment pass after the catalogue fetch, filling only what `/v1/models` omitted — explicit values always win:
+
+- **llama.cpp** — `GET /props`: the real runtime context window (`default_generation_settings.n_ctx`) and the authoritative VLM flag (`modalities.vision`)
+- **oMLX** — `GET /v1/models/status`: the effective per-model context window, max output tokens, load state (drives the `[loaded]` flag), and a thinking-capable default
+- **Ollama** — `GET /api/tags` + `GET /api/ps`: the model card's default context length and which models are currently loaded
+
+Enrichment is silent best-effort: a missing or failing native endpoint (or a connection refusal) leaves the catalogue exactly as the OpenAI layer reported it, and the cached catalogue retains the last known-good enrichment for offline fallback.
 
 ### Compatibility settings
 

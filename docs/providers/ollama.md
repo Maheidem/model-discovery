@@ -94,9 +94,9 @@ per-request max-tokens (Ollama clamps generation to its `num_predict` param).
 
 ## Gaps / tuning work
 
-1. **Native probe for Ollama**: `GET /api/tags` (context, family, quant) + `GET /api/ps`
-   (loaded + context) — strictly better than `/v1/models` for this server type.
-2. Keep omitting `top_k`/`min_p`/repeat penalty on the OpenAI layer (current behavior).
-3. If `reasoning_effort` is probed working (or family indicates a thinking model), set
+> **Status 0.7.0:** `/api/tags` + `/api/ps` are now probed (enrichment) — default context
+> from model cards and the `[loaded]` flag.
+
+1. If `reasoning_effort` is probed working (or family indicates a thinking model), set
    `reasoning: true` + `supportsReasoningEffort: true`.
-4. Optional future: native `/api/chat` backend for full-sampler profiles (large change).
+2. Optional future: native `/api/chat` backend for full-sampler profiles (large change).
