@@ -26,7 +26,7 @@ Interactive TUI for discovering and managing local AI model endpoints. Works wit
 pi install npm:@maheidem/model-discovery
 
 # Via git
-pi install git:github.com/Maheidem/model-discovery@v0.6.0
+pi install git:github.com/Maheidem/model-discovery@v0.6.1
 ```
 
 ## Usage

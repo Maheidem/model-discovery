@@ -1,6 +1,6 @@
 {
   "name": "@maheidem/model-discovery",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "type": "module",
   "description": "Interactive TUI for discovering local AI endpoints and defining named thinking/sampling profiles (llama.cpp, oMLX, Ollama, vLLM, SGLang, LM Studio).",
   "keywords": [
