@@ -1,11 +1,14 @@
 {
   "name": "@maheidem/model-discovery",
-  "version": "0.1.0",
-  "description": "Interactive TUI for discovering and managing local AI model endpoints (llama.cpp, oMLX, Ollama, vLLM, SGLang, LM Studio). Reads real server-reported model configurations — no hardcoded databases.",
+  "version": "0.6.0",
+  "type": "module",
+  "description": "Interactive TUI for discovering local AI endpoints and defining named thinking/sampling profiles (llama.cpp, oMLX, Ollama, vLLM, SGLang, LM Studio).",
   "keywords": [
     "pi-package",
     "extension",
     "model-discovery",
+    "model-profiles",
+    "sampling",
     "local-llm",
     "llama.cpp",
     "ollama",
@@ -15,8 +18,11 @@
   "bugs": {
     "url": "https://github.com/maheidem/model-discovery/issues"
   },
+  "scripts": {
+    "test": "node --experimental-strip-types --test profiles.test.ts offline.test.ts"
+  },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-coding-agent": ">=0.84.0",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
