@@ -15,8 +15,8 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { BorderedLoader, DynamicBorder } from "@earendil-works/pi-coding-agent";
-import { CURSOR_MARKER, Container, Input, type SelectItem, SelectList, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { BorderedLoader } from "@earendil-works/pi-coding-agent";
+import type { SelectItem } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
 	analyzeExplicitProfileRouting,
@@ -26,7 +26,6 @@ import {
 	describeProfileSampling,
 	expandAdaptiveProfileRouters,
 	expandModelProfiles,
-	migrateLegacyProfileRouting,
 	profileModelId,
 	REASONING_EFFORTS,
 	repetitionPenaltyKeyForServer,
@@ -52,205 +51,40 @@ import {
 	repairRequestToolSchemas,
 	type ToolSchemaRepairReport,
 } from "./schema-repair.ts";
-import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import os from "node:os";
+import { createDiscoveryApplication } from "./application.ts";
+import { completeDiscoverArgs, DISCOVER_USAGE, parseDiscoverArgs } from "./commands.ts";
+import {
+	errorMessage,
+	recordFailedScan,
+	recordSuccessfulScan,
+	STORAGE_PATH,
+	type DiscoveredProvider,
+	type ModelOverride,
+} from "./storage.ts";
+import {
+	buildDiagnosticsLines,
+	buildHomeItems,
+	buildHomeSummary,
+	formatDiscoveryStatus,
+} from "./ui-model.ts";
+import { WizardInput, WizardSecretInput, WizardSelect, WizardTextView } from "./ui/wizard-shell.ts";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-interface ModelOverride {
-	contextWindow?: number;
-	maxTokens?: number;
-	reasoning?: boolean;
-	input?: string[];
-}
-interface DiscoveredProvider {
-	name: string;
-	baseUrl: string;
-	apiKey?: string;
-	serverType?: string;
-	defaultContextWindow?: number;
-	defaultMaxTokens?: number;
-	modelOverrides?: Record<string, ModelOverride>;
-	modelProfiles?: Record<string, ModelProfile[]>;
-	modelProfileRouting?: Record<string, ModelProfileRouting>;
-	profileSchemaVersion?: number;
-	cachedModels?: Record<string, unknown>[];
-	compat?: Record<string, unknown>;
-	/**
-	 * Inline $defs/$ref in outgoing tool schemas for this endpoint (default: true for
-	 * local/self-hosted endpoints, where llama.cpp-style grammar converters reject any
-	 * $ref that is not resolvable at the document root). Set false to send verbatim.
-	 */
-	repairToolSchemas?: boolean;
-	/** Last successful live catalogue refresh (legacy name retained in storage). */
-	lastScanned?: number;
-	lastScanAttempt?: number;
-	lastScanError?: string;
-}
-
-// ---------------------------------------------------------------------------
-// Storage
-// ---------------------------------------------------------------------------
-
-const STORAGE_PATH = join(os.homedir(), ".pi", "agent", "model-discovery.json");
-
-function writeProvidersAtomic(providers: DiscoveredProvider[]): void {
-	const tempPath = `${STORAGE_PATH}.${process.pid}.${Date.now()}.tmp`;
-	try {
-		writeFileSync(tempPath, JSON.stringify(providers, null, 2), { encoding: "utf-8", mode: 0o600 });
-		renameSync(tempPath, STORAGE_PATH);
-	} catch (error) {
-		try {
-			if (existsSync(tempPath)) unlinkSync(tempPath);
-		} catch {
-			/* best-effort cleanup */
-		}
-		throw error;
+function normalizeEndpointUrl(rawUrl: string): string {
+	let url = rawUrl.trim();
+	if (!url) throw new Error("Endpoint URL cannot be blank.");
+	if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url) && !/^https?:\/\//i.test(url)) {
+		throw new Error("Endpoint URL must use HTTP or HTTPS.");
 	}
-}
-
-function loadProviders(): DiscoveredProvider[] {
-	try {
-		if (existsSync(STORAGE_PATH)) {
-			const providers = JSON.parse(readFileSync(STORAGE_PATH, "utf-8")) as DiscoveredProvider[];
-			let migrated = false;
-			for (const provider of providers) {
-				if ((provider.profileSchemaVersion ?? 0) >= 2) continue;
-				for (const [modelId, rawProfiles] of Object.entries(provider.modelProfiles ?? {})) {
-					if (!Array.isArray(rawProfiles)) continue;
-					const result = migrateLegacyProfileRouting(rawProfiles, provider.modelProfileRouting?.[modelId]);
-					if (!result.changed || !result.routing) continue;
-					provider.modelProfiles = { ...provider.modelProfiles, [modelId]: result.profiles };
-					provider.modelProfileRouting = { ...provider.modelProfileRouting, [modelId]: result.routing };
-					migrated = true;
-				}
-				provider.profileSchemaVersion = 2;
-				migrated = true;
-			}
-			if (migrated) writeProvidersAtomic(providers);
-			return providers;
-		}
-	} catch {
-		/* ignore */
+	if (!/^https?:\/\//i.test(url)) url = `http://${url}`;
+	const parsed = new URL(url);
+	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+		throw new Error("Endpoint URL must use HTTP or HTTPS.");
 	}
-	return [];
-}
-
-function saveProviders(providers: DiscoveredProvider[]): void {
-	writeProvidersAtomic(providers);
-}
-
-function upsertProvider(provider: DiscoveredProvider): void {
-	const all = loadProviders();
-	const idx = all.findIndex((p) => p.name === provider.name);
-	if (idx >= 0) all[idx] = provider;
-	else all.push(provider);
-	saveProviders(all);
-}
-
-function deleteProvider(name: string): void {
-	saveProviders(loadProviders().filter((p) => p.name !== name));
-}
-
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
-function persistProviderScanState(provider: DiscoveredProvider): void {
-	try {
-		const providers = loadProviders();
-		const stored = providers.find((candidate) => candidate.name === provider.name && candidate.baseUrl === provider.baseUrl);
-		if (!stored) return;
-		stored.serverType = provider.serverType;
-		stored.cachedModels = provider.cachedModels;
-		stored.lastScanned = provider.lastScanned;
-		stored.lastScanAttempt = provider.lastScanAttempt;
-		stored.lastScanError = provider.lastScanError;
-		saveProviders(providers);
-	} catch (error) {
-		// Runtime registration must not fail merely because scan metadata could not be persisted.
-		console.error(`[model-discovery] ${provider.name}: could not persist catalogue state (${errorMessage(error)}).`);
-	}
-}
-
-function recordSuccessfulScan(
-	provider: DiscoveredProvider,
-	models: Record<string, unknown>[],
-	serverType: string,
-	persist = true,
-): void {
-	const now = Date.now();
-	provider.serverType = serverType;
-	provider.cachedModels = models;
-	provider.lastScanned = now;
-	provider.lastScanAttempt = now;
-	provider.lastScanError = undefined;
-	if (persist) persistProviderScanState(provider);
-}
-
-function recordFailedScan(provider: DiscoveredProvider, error: unknown, persist = true): void {
-	provider.lastScanAttempt = Date.now();
-	provider.lastScanError = redactSecret(errorMessage(error), provider.apiKey);
-	if (persist) persistProviderScanState(provider);
-}
-
-function renameProvider(oldName: string, newName: string): boolean {
-	const all = loadProviders();
-	const idx = all.findIndex((p) => p.name === oldName);
-	if (idx < 0) return false;
-	if (all.some((p) => p.name === newName)) return false; // name already taken
-	all[idx].name = newName;
-	saveProviders(all);
-	return true;
-}
-
-function getModelProfiles(provider: DiscoveredProvider, modelId: string): ModelProfile[] {
-	const profiles: unknown = provider.modelProfiles?.[modelId];
-	if (!Array.isArray(profiles)) return [];
-	return profiles.filter((profile): profile is ModelProfile => validateModelProfile(profile) === null);
-}
-
-function saveModelProfile(
-	provider: DiscoveredProvider,
-	modelId: string,
-	profile: ModelProfile,
-	previousSlug?: string,
-): void {
-	const profiles = getModelProfiles(provider, modelId);
-	const index = previousSlug === undefined ? -1 : profiles.findIndex((item) => item.slug === previousSlug);
-	const next = [...profiles];
-	if (index >= 0) next[index] = profile;
-	else next.push(profile);
-	provider.modelProfiles = { ...provider.modelProfiles, [modelId]: next };
-}
-
-function deleteModelProfile(provider: DiscoveredProvider, modelId: string, slug: string): void {
-	const nextProfiles = getModelProfiles(provider, modelId).filter((profile) => profile.slug !== slug);
-	const modelProfiles = { ...provider.modelProfiles };
-	if (nextProfiles.length > 0) modelProfiles[modelId] = nextProfiles;
-	else delete modelProfiles[modelId];
-	provider.modelProfiles = Object.keys(modelProfiles).length > 0 ? modelProfiles : undefined;
-}
-
-function getModelProfileRouting(provider: DiscoveredProvider, modelId: string): ModelProfileRouting | undefined {
-	return provider.modelProfileRouting?.[modelId];
-}
-
-function saveModelProfileRouting(
-	provider: DiscoveredProvider,
-	modelId: string,
-	routing: ModelProfileRouting,
-): void {
-	provider.modelProfileRouting = { ...provider.modelProfileRouting, [modelId]: routing };
-}
-
-function deleteModelProfileRouting(provider: DiscoveredProvider, modelId: string): void {
-	const routing = { ...provider.modelProfileRouting };
-	delete routing[modelId];
-	provider.modelProfileRouting = Object.keys(routing).length > 0 ? routing : undefined;
+	return url.replace(/\/+$/, "");
 }
 
 function generateProviderName(url: string): string {
@@ -273,6 +107,8 @@ function fmt(n: number | null | undefined): string {
 // ---------------------------------------------------------------------------
 
 export default async function (pi: ExtensionAPI) {
+	const app = createDiscoveryApplication();
+
 	type RuntimeThinkingRoutes = {
 		routes: ThinkingProfileRoutes;
 		repetitionPenaltyKey: ReturnType<typeof repetitionPenaltyKeyForServer>;
@@ -316,8 +152,9 @@ export default async function (pi: ExtensionAPI) {
 	async function registerProvider(
 		provider: DiscoveredProvider,
 		prefetched?: { models: Record<string, unknown>[]; serverType: string },
+		signal: AbortSignal = AbortSignal.timeout(2_000),
 	): Promise<{ models: ModelConfig[]; rawModels: Record<string, unknown>[]; serverType: string; profileCount: number }> {
-		const { models, serverType } = prefetched ?? (await fetchModels(provider.baseUrl, provider.apiKey, AbortSignal.timeout(2_000)));
+		const { models, serverType } = prefetched ?? (await fetchModels(provider.baseUrl, provider.apiKey, signal));
 		if (models.length === 0) throw new Error("No models found at this endpoint.");
 
 		const routePrefix = `${provider.name}/`;
@@ -383,7 +220,7 @@ export default async function (pi: ExtensionAPI) {
 			thinkingRoutes.set(routeKey(provider.name, modelId), { routes, repetitionPenaltyKey });
 		}
 		for (const base of baseModels) {
-			for (const profile of getModelProfiles(provider, base.id)) {
+			for (const profile of app.profiles(provider, base.id)) {
 				if (profile.exposeAsModel !== false) {
 					fixedProfileLabels.set(routeKey(provider.name, profileModelId(base.id, profile.slug)), profile.slug);
 				}
@@ -410,8 +247,40 @@ export default async function (pi: ExtensionAPI) {
 		};
 	}
 
+	async function discoverAndRegisterSource(options: {
+		url: string;
+		providerName?: string;
+		apiKey?: string;
+		signal?: AbortSignal;
+	}): Promise<{
+		provider: DiscoveredProvider;
+		models: ModelConfig[];
+		rawModels: Record<string, unknown>[];
+		serverType: string;
+		profileCount: number;
+	}> {
+		const url = normalizeEndpointUrl(options.url);
+		const providerName = options.providerName?.trim() || generateProviderName(url);
+		const live = await fetchModels(url, options.apiKey, options.signal);
+		if (live.models.length === 0) throw new Error("Endpoint is online but reports no models.");
+		const existing = app.findSource(providerName);
+		const provider: DiscoveredProvider = existing
+			? { ...existing, baseUrl: url, apiKey: options.apiKey ?? existing.apiKey }
+			: { name: providerName, baseUrl: url, apiKey: options.apiKey };
+		const registered = await registerProvider(provider, live);
+		recordSuccessfulScan(provider, live.models, live.serverType, false);
+		app.saveSource(provider);
+		return {
+			provider,
+			models: registered.models,
+			rawModels: live.models,
+			serverType: live.serverType,
+			profileCount: registered.profileCount,
+		};
+	}
+
 	// Register saved providers at startup (concurrent — one dead endpoint can't block the others)
-	const providers = loadProviders();
+	const providers = app.listSources();
 	if (providers.length > 0) {
 		const results = await Promise.allSettled(
 			providers.map(async (provider) => {
@@ -501,42 +370,67 @@ export default async function (pi: ExtensionAPI) {
 		items: SelectItem[],
 		headerLines: string[] = [],
 	): Promise<string | null> {
-		return await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
-			const container = new Container();
-			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-			container.addChild(new Text(theme.fg("accent", theme.bold(title)), 1, 0));
-			for (const line of headerLines) {
-				container.addChild(new Text(theme.fg("muted", line), 1, 0));
-			}
-
-			const selectList = new SelectList(
+		return await ctx.ui.custom<string | null>(
+			(tui, theme, keybindings, done) => new WizardSelect({
+				theme,
+				keybindings,
+				title,
 				items,
-				Math.min(items.length, 12),
-				{
-					selectedPrefix: (t: string) => theme.fg("accent", t),
-					selectedText: (t: string) => theme.fg("accent", t),
-					description: (t: string) => theme.fg("muted", t),
-					scrollInfo: (t: string) => theme.fg("dim", t),
-					noMatch: (t: string) => theme.fg("warning", t),
-				},
-				{ minPrimaryColumnWidth: 18, maxPrimaryColumnWidth: 48 },
-			);
-			selectList.onSelect = (item) => done(item.value);
-			selectList.onCancel = () => done(null);
-			container.addChild(selectList);
+				headerLines,
+				requestRender: () => tui.requestRender(),
+				done,
+			}),
+			{
+				overlay: true,
+				overlayOptions: { anchor: "center", width: 88, minWidth: 36, maxHeight: "90%", margin: 1 },
+			},
+		);
+	}
 
-			container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter select • esc back • type to filter"), 1, 0));
-			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+	async function runTextView(
+		ctx: ExtensionCommandContext,
+		title: string,
+		lines: string[],
+	): Promise<void> {
+		await ctx.ui.custom<void>(
+			(tui, theme, keybindings, done) => new WizardTextView({
+				theme,
+				keybindings,
+				title,
+				lines,
+				requestRender: () => tui.requestRender(),
+				done: () => done(),
+			}),
+			{
+				overlay: true,
+				overlayOptions: { anchor: "center", width: 88, minWidth: 36, maxHeight: "90%", margin: 1 },
+			},
+		);
+	}
 
-			return {
-				render: (w: number) => container.render(w),
-				invalidate: () => container.invalidate(),
-				handleInput: (data: string) => {
-					selectList.handleInput(data);
-					tui.requestRender();
-				},
-			};
-		});
+	async function runInput(
+		ctx: ExtensionCommandContext,
+		title: string,
+		initialValue = "",
+		description?: string,
+		validate?: (value: string) => string | null,
+	): Promise<string | undefined> {
+		return await ctx.ui.custom<string | undefined>(
+			(tui, theme, keybindings, done) => new WizardInput({
+				theme,
+				keybindings,
+				title,
+				description,
+				initialValue,
+				validate,
+				requestRender: () => tui.requestRender(),
+				done,
+			}),
+			{
+				overlay: true,
+				overlayOptions: { anchor: "center", width: 72, minWidth: 36, maxHeight: "90%", margin: 1 },
+			},
+		);
 	}
 
 	async function runLoader<T>(
@@ -545,18 +439,31 @@ export default async function (pi: ExtensionAPI) {
 		work: (signal: AbortSignal) => Promise<T>,
 		onError?: (error: unknown) => void,
 	): Promise<T | null> {
-		return await ctx.ui.custom<T | null>((tui, theme, _kb, done) => {
-			const loader = new BorderedLoader(tui, theme, message);
-			loader.onAbort = () => done(null);
-			work(loader.signal)
-				.then((result) => done(result))
-				.catch((err) => {
-					onError?.(err);
-					ctx.ui.notify(errorMessage(err), "error");
+		return await ctx.ui.custom<T | null>(
+			(tui, theme, _keybindings, done) => {
+				const loader = new BorderedLoader(tui, theme, message);
+				let settled = false;
+				loader.onAbort = () => {
+					settled = true;
 					done(null);
-				});
-			return loader;
-		});
+				};
+				work(loader.signal)
+					.then((result) => {
+						if (!settled) done(result);
+					})
+					.catch((err) => {
+						if (settled) return;
+						onError?.(err);
+						ctx.ui.notify(errorMessage(err), "error");
+						done(null);
+					});
+				return loader;
+			},
+			{
+				overlay: true,
+				overlayOptions: { anchor: "center", width: 72, minWidth: 36, maxHeight: "90%", margin: 1 },
+			},
+		);
 	}
 
 	async function askSecret(
@@ -564,54 +471,41 @@ export default async function (pi: ExtensionAPI) {
 		title: string,
 		description: string,
 	): Promise<string | undefined> {
-		return await ctx.ui.custom<string | undefined>((tui, theme, _kb, done) => {
-			const input = new Input();
-			input.onSubmit = (value) => done(value);
-			input.onEscape = () => done(undefined);
-
-			const container = new Container();
-			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-			container.addChild(new Text(theme.fg("accent", theme.bold(title)), 1, 0));
-			container.addChild(new Text(theme.fg("muted", description), 1, 0));
-			container.addChild({
-				render: (width: number) => {
-					const count = [...input.getValue()].length;
-					const available = Math.max(1, width - 4);
-					const masked = count > available ? `…${"•".repeat(Math.max(0, available - 1))}` : "•".repeat(count);
-					const marker = input.focused ? CURSOR_MARKER : "";
-					return [truncateToWidth(`> ${masked}${marker}\x1b[7m \x1b[27m`, width, "")];
-				},
-				invalidate: () => {},
-			});
-			container.addChild(new Text(theme.fg("dim", "enter submit • esc cancel • value is masked"), 1, 0));
-			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-
-			return {
-				get focused() {
-					return input.focused;
-				},
-				set focused(value: boolean) {
-					input.focused = value;
-				},
-				render: (width: number) => container.render(width),
-				invalidate: () => container.invalidate(),
-				handleInput: (data: string) => {
-					input.handleInput(data);
-					tui.requestRender();
-				},
-			};
-		});
+		return await ctx.ui.custom<string | undefined>(
+			(tui, theme, keybindings, done) => new WizardSecretInput({
+				theme,
+				keybindings,
+				title,
+				description,
+				requestRender: () => tui.requestRender(),
+				done,
+			}),
+			{
+				overlay: true,
+				overlayOptions: { anchor: "center", width: 72, minWidth: 36, maxHeight: "90%", margin: 1 },
+			},
+		);
 	}
 
 	async function askNumber(
 		ctx: ExtensionCommandContext,
 		title: string,
-		placeholder: string,
+		initialValue: string,
 	): Promise<number | undefined> {
-		const raw = (await ctx.ui.input(title, placeholder))?.trim();
-		if (!raw) return undefined;
-		const n = parseInt(raw.replace(/[,._\s]/g, ""), 10);
-		return isNaN(n) ? undefined : n;
+		const raw = await runInput(
+			ctx,
+			title,
+			initialValue,
+			"Enter a positive whole number. Clear the field and submit to keep the current value.",
+			(value) => {
+				const normalized = value.trim().replace(/[,._\s]/g, "");
+				if (!normalized) return null;
+				if (!/^\d+$/.test(normalized) || Number(normalized) <= 0) return "Enter a positive whole number greater than zero.";
+				return null;
+			},
+		);
+		const normalized = raw?.trim().replace(/[,._\s]/g, "");
+		return normalized ? Number(normalized) : undefined;
 	}
 
 	function modelFlags(c: ModelConfig, ov?: ModelOverride): string {
@@ -721,19 +615,18 @@ export default async function (pi: ExtensionAPI) {
 		if (action === null) return null;
 		if (action === "omit") return undefined;
 
-		for (;;) {
-			const raw = await ctx.ui.input(`Value for ${field.label}`, String(current ?? field.example));
-			if (raw === undefined) return null;
-			const trimmed = raw.trim();
-			if (!trimmed) {
-				ctx.ui.notify("Enter a numeric value, or choose Omit from the previous screen.", "error");
-				continue;
-			}
-			const value = Number(trimmed);
-			const error = validateProfileSampling({ [field.key]: value });
-			if (!error) return value;
-			ctx.ui.notify(error, "error");
-		}
+		const raw = await runInput(
+			ctx,
+			`Value for ${field.label}`,
+			String(current ?? field.example),
+			field.description,
+			(value) => {
+				const trimmed = value.trim();
+				if (!trimmed) return "Enter a numeric value, or return and choose Omit.";
+				return validateProfileSampling({ [field.key]: Number(trimmed) });
+			},
+		);
+		return raw === undefined ? null : Number(raw.trim());
 	}
 
 	function profileDescription(
@@ -782,7 +675,7 @@ export default async function (pi: ExtensionAPI) {
 		candidate: ModelProfile,
 		previousSlug?: string,
 	): ModelProfile[] {
-		const profiles = getModelProfiles(provider, modelId);
+		const profiles = app.profiles(provider, modelId);
 		const index = previousSlug === undefined ? -1 : profiles.findIndex((profile) => profile.slug === previousSlug);
 		if (index < 0) return [...profiles, candidate];
 		return profiles.map((profile, profileIndex) => (profileIndex === index ? candidate : profile));
@@ -792,14 +685,14 @@ export default async function (pi: ExtensionAPI) {
 		ctx: ExtensionCommandContext,
 		initial: string,
 	): Promise<string | null> {
-		for (;;) {
-			const answer = await ctx.ui.input("Preset name", initial || "thinking-medium");
-			if (answer === undefined) return null;
-			const slug = answer.trim();
-			const error = validateProfileSlug(slug);
-			if (!error) return slug;
-			ctx.ui.notify(error, "error");
-		}
+		const answer = await runInput(
+			ctx,
+			"Preset name",
+			initial || "thinking-medium",
+			"Use a short slug for the fixed model alias and routing map.",
+			(value) => validateProfileSlug(value.trim()),
+		);
+		return answer === undefined ? null : answer.trim();
 	}
 
 	function validateProfileForProvider(
@@ -813,7 +706,7 @@ export default async function (pi: ExtensionAPI) {
 		if (profileError) return profileError;
 
 		const aliasId = profileModelId(config.id, profile.slug);
-		const routing = getModelProfileRouting(provider, config.id);
+		const routing = app.profileRouting(provider, config.id);
 		if (routing?.aliasSlug === profile.slug && profile.slug !== previousSlug) {
 			return `Preset name "${profile.slug}" collides with the adaptive model alias.`;
 		}
@@ -865,7 +758,7 @@ export default async function (pi: ExtensionAPI) {
 			const sampling = profile.sampling ?? {};
 			const samplingFields = profileSamplingFields(serverType);
 			const repetitionPenaltyKey = repetitionPenaltyKeyForServer(serverType);
-			const currentRouting = getModelProfileRouting(provider, config.id);
+			const currentRouting = app.profileRouting(provider, config.id);
 			const previewRouting = currentRouting
 				? { ...currentRouting, levels: { ...currentRouting.levels } }
 				: undefined;
@@ -904,10 +797,10 @@ export default async function (pi: ExtensionAPI) {
 					label: field.label,
 					description: `${sampling[field.key] ?? "omitted (server/model default)"} · ${field.description}`,
 				})),
-				{ value: "save", label: "✓ Save preset", description: profileModelId(config.id, profile.slug) },
+				{ value: "save", label: "Save preset", description: profileModelId(config.id, profile.slug) },
 			];
-			if (existing) items.push({ value: "delete", label: "✗ Delete preset" });
-			items.push({ value: "cancel", label: "← Cancel" });
+			if (existing) items.push({ value: "delete", label: "Delete preset", description: "Requires confirmation" });
+			items.push({ value: "cancel", label: "Cancel" });
 
 			const action = await runSelect(ctx, `Preset: ${profile.slug}`, items, [
 				`model id: ${profileModelId(config.id, profile.slug)} → ${config.id}`,
@@ -966,7 +859,7 @@ export default async function (pi: ExtensionAPI) {
 				}
 				return { action: "save", profile };
 			} else if (action === "delete" && existing) {
-				const routing = getModelProfileRouting(provider, config.id);
+				const routing = app.profileRouting(provider, config.id);
 				const routed = routing && Object.values(routing.levels).includes(existing.slug);
 				const confirmed = await ctx.ui.confirm(
 					"Delete preset",
@@ -982,10 +875,10 @@ export default async function (pi: ExtensionAPI) {
 		provider: DiscoveredProvider,
 		prefetched: { models: Record<string, unknown>[]; serverType: string },
 	): Promise<boolean> {
-		upsertProvider(provider);
+		app.saveSource(provider);
 		try {
 			await registerProvider(provider, prefetched);
-			upsertProvider(provider);
+			app.saveSource(provider);
 			return true;
 		} catch (err) {
 			ctx.ui.notify(
@@ -1012,12 +905,12 @@ export default async function (pi: ExtensionAPI) {
 		provider: DiscoveredProvider,
 		modelId: string,
 	): Promise<void> {
-		const routing = getModelProfileRouting(provider, modelId);
+		const routing = app.profileRouting(provider, modelId);
 		if (!routing || ctx.model?.provider !== provider.name) return;
 		const adaptiveId = profileModelId(modelId, routing.aliasSlug);
 		if (ctx.model.id !== adaptiveId) return;
 		const valid =
-			routing.enabled && analyzeExplicitProfileRouting(routing, getModelProfiles(provider, modelId)).errors.length === 0;
+			routing.enabled && analyzeExplicitProfileRouting(routing, app.profiles(provider, modelId)).errors.length === 0;
 		const refreshed = ctx.modelRegistry.find(provider.name, valid ? adaptiveId : modelId);
 		if (refreshed) await pi.setModel(refreshed);
 	}
@@ -1088,7 +981,10 @@ export default async function (pi: ExtensionAPI) {
 			profile,
 			repetitionPenaltyKeyForServer(serverType),
 		);
-		await runSelect(ctx, `${level} → ${profile.slug}`, [{ value: "back", label: "← Back" }], [
+		await runTextView(ctx, `${level} → ${profile.slug}`, [
+			`Adaptive model: ${profileModelId(config.id, routing.aliasSlug)}`,
+			`Base model: ${config.id}`,
+			"",
 			...JSON.stringify(payload, null, 2).split("\n"),
 		]);
 	}
@@ -1107,7 +1003,7 @@ export default async function (pi: ExtensionAPI) {
 			ctx.ui.notify("Create at least one preset before configuring adaptive routing.", "warning");
 			return null;
 		}
-		const existing = getModelProfileRouting(provider, config.id);
+		const existing = app.profileRouting(provider, config.id);
 		const routing: ModelProfileRouting = existing
 			? { ...existing, levels: { ...existing.levels } }
 			: defaultProfileRouting(profiles);
@@ -1135,11 +1031,11 @@ export default async function (pi: ExtensionAPI) {
 					label: `Pi ${level}`,
 					description: `→ ${routing.levels[level] || "not selected"}`,
 				})),
-				{ value: "preview", label: "Preview exact requests", description: "inspect the payload preset for each Pi level" },
-				{ value: "save", label: "✓ Review and save", description: analysis.errors.length ? `${analysis.errors.length} issue(s)` : "valid mapping" },
+				{ value: "preview", label: "Preview exact requests", description: "Inspect the payload preset for each Pi level" },
+				{ value: "save", label: "Review and save", description: analysis.errors.length ? `${analysis.errors.length} issue(s)` : "Valid mapping" },
 			];
-			if (existing) items.push({ value: "remove", label: "✗ Remove adaptive routing", description: "fixed presets remain unchanged" });
-			items.push({ value: "cancel", label: "← Cancel" });
+			if (existing) items.push({ value: "remove", label: "Remove adaptive routing", description: "Fixed presets remain unchanged · requires confirmation" });
+			items.push({ value: "cancel", label: "Cancel" });
 
 			const action = await runSelect(ctx, "Adaptive Shift-Tab routing", items, [
 				"Explicit router: only this alias changes complete presets when Shift-Tab is pressed.",
@@ -1212,13 +1108,13 @@ export default async function (pi: ExtensionAPI) {
 		prefetched: { models: Record<string, unknown>[]; serverType: string },
 	): Promise<void> {
 		for (;;) {
-			const profiles = getModelProfiles(provider, config.id);
-			const routing = getModelProfileRouting(provider, config.id);
+			const profiles = app.profiles(provider, config.id);
+			const routing = app.profileRouting(provider, config.id);
 			const routeAnalysis = routing ? analyzeExplicitProfileRouting(routing, profiles) : undefined;
 			const items: SelectItem[] = [
 				{
 					value: "routing",
-					label: routing ? "Configure adaptive routing" : "+ Configure adaptive routing",
+					label: "Configure adaptive routing",
 					description: !routing
 						? "explicitly map all seven Pi levels to complete presets"
 						: routeAnalysis?.errors.length
@@ -1236,8 +1132,8 @@ export default async function (pi: ExtensionAPI) {
 				});
 			}
 			items.push(
-				{ value: "add", label: "+ Create preset", description: "create a complete thinking/sampling parameter bundle" },
-				{ value: "clone", label: "+ Clone preset", description: "copy an existing preset, then edit only what differs" },
+				{ value: "add", label: "Create preset", description: "Create a complete thinking/sampling parameter bundle" },
+				{ value: "clone", label: "Clone preset", description: "Copy an existing preset, then edit only what differs" },
 			);
 			for (const profile of profiles) {
 				items.push({
@@ -1246,7 +1142,7 @@ export default async function (pi: ExtensionAPI) {
 					description: profileDescription(profile, prefetched.serverType, routing),
 				});
 			}
-			items.push({ value: "back", label: "← Back" });
+			items.push({ value: "back", label: "Back" });
 
 			const action = await runSelect(ctx, `Thinking & presets: ${config.id}`, items, [
 				`${profiles.length} preset(s) · base model behavior is never changed by presets`,
@@ -1265,8 +1161,8 @@ export default async function (pi: ExtensionAPI) {
 					prefetched.serverType,
 				);
 				if (!result) continue;
-				if (result.action === "save") saveModelProfileRouting(provider, config.id, result.routing);
-				else deleteModelProfileRouting(provider, config.id);
+				if (result.action === "save") app.saveRouting(provider, config.id, result.routing);
+				else app.removeRouting(provider, config.id);
 				const registered = await persistProfileChange(ctx, provider, prefetched);
 				if (registered) {
 					const nextAlias = result.action === "save" && result.routing.enabled ? result.routing.aliasSlug : undefined;
@@ -1318,7 +1214,7 @@ export default async function (pi: ExtensionAPI) {
 			);
 			if (!result) continue;
 			if (result.action === "save") {
-				const currentRouting = getModelProfileRouting(provider, config.id);
+				const currentRouting = app.profileRouting(provider, config.id);
 				const nextRouting = currentRouting
 					? { ...currentRouting, levels: { ...currentRouting.levels } }
 					: undefined;
@@ -1344,8 +1240,8 @@ export default async function (pi: ExtensionAPI) {
 					);
 					if (!confirmed) continue;
 				}
-				saveModelProfile(provider, config.id, result.profile, existing?.slug);
-				if (nextRouting) saveModelProfileRouting(provider, config.id, nextRouting);
+				app.saveProfile(provider, config.id, result.profile, existing?.slug);
+				if (nextRouting) app.saveRouting(provider, config.id, nextRouting);
 				const registered = await persistProfileChange(ctx, provider, prefetched);
 				if (registered) {
 					if (existing && existing.exposeAsModel !== false) {
@@ -1363,7 +1259,7 @@ export default async function (pi: ExtensionAPI) {
 					ctx.ui.notify(`${existing ? "Updated" : "Created"} preset "${result.profile.slug}".`, "info");
 				}
 			} else if (existing) {
-				deleteModelProfile(provider, config.id, existing.slug);
+				app.removeProfile(provider, config.id, existing.slug);
 				const registered = await persistProfileChange(ctx, provider, prefetched);
 				if (registered) {
 					await refreshSelectedProfile(
@@ -1407,8 +1303,8 @@ export default async function (pi: ExtensionAPI) {
 				} · input ${effInput.join("+")}`,
 			];
 
-			const configuredProfiles = getModelProfiles(provider, config.id);
-			const configuredRouting = getModelProfileRouting(provider, config.id);
+			const configuredProfiles = app.profiles(provider, config.id);
+			const configuredRouting = app.profileRouting(provider, config.id);
 			const routingAnalysis = configuredRouting
 				? analyzeExplicitProfileRouting(configuredRouting, configuredProfiles)
 				: undefined;
@@ -1441,7 +1337,7 @@ export default async function (pi: ExtensionAPI) {
 			if (Object.keys(ov).length > 0) {
 				items.push({ value: "clear", label: "Clear overrides", description: "revert to server-reported values" });
 			}
-			items.push({ value: "back", label: "← Back" });
+			items.push({ value: "back", label: "Back" });
 
 			const action = await runSelect(ctx, `Model: ${config.id}${modelFlags(config, ov)}`, items, header);
 			if (!action || action === "back") return;
@@ -1451,21 +1347,24 @@ export default async function (pi: ExtensionAPI) {
 				continue;
 			}
 
+			let feedback: string | undefined;
 			if (action === "ctx") {
 				const n = await askNumber(ctx, `Context window for ${config.id}`, String(effCtx ?? 128000));
-				if (n !== undefined) {
-					provider.modelOverrides = { ...provider.modelOverrides, [config.id]: { ...ov, contextWindow: n } };
-				}
+				if (n === undefined) continue;
+				provider.modelOverrides = { ...provider.modelOverrides, [config.id]: { ...ov, contextWindow: n } };
+				feedback = `Context window saved as ${fmt(n)}.`;
 			} else if (action === "max") {
 				const n = await askNumber(ctx, `Max output tokens for ${config.id}`, String(effMax ?? 16384));
-				if (n !== undefined) {
-					provider.modelOverrides = { ...provider.modelOverrides, [config.id]: { ...ov, maxTokens: n } };
-				}
+				if (n === undefined) continue;
+				provider.modelOverrides = { ...provider.modelOverrides, [config.id]: { ...ov, maxTokens: n } };
+				feedback = `Max output tokens saved as ${fmt(n)}.`;
 			} else if (action === "reasoning") {
+				const reasoning = !(effReasoning ?? false);
 				provider.modelOverrides = {
 					...provider.modelOverrides,
-					[config.id]: { ...ov, reasoning: !(effReasoning ?? false) },
+					[config.id]: { ...ov, reasoning },
 				};
+				feedback = `Reasoning ${reasoning ? "enabled" : "disabled"}.`;
 			} else if (action === "input") {
 				// Toggle vision: add/remove "image" from input modalities
 				const hasVision = effInput.includes("image");
@@ -1476,19 +1375,23 @@ export default async function (pi: ExtensionAPI) {
 					...provider.modelOverrides,
 					[config.id]: { ...ov, input: newInput },
 				};
+				feedback = `Vision input ${hasVision ? "disabled" : "enabled"}.`;
 			} else if (action === "clear") {
 				if (provider.modelOverrides) {
 					delete provider.modelOverrides[config.id];
 					if (Object.keys(provider.modelOverrides).length === 0) provider.modelOverrides = undefined;
 				}
+				feedback = "Model overrides cleared.";
 			}
+			if (!feedback) continue;
 
-			// Persist + re-register with new values
-			upsertProvider(provider);
+			// Persist + re-register with new values.
+			app.saveSource(provider);
 			try {
 				await registerProvider(provider, prefetched);
-			} catch {
-				/* endpoint may be down; overrides still saved */
+				ctx.ui.notify(feedback, "info");
+			} catch (error) {
+				ctx.ui.notify(`${feedback} Provider registration remains on its previous state: ${errorMessage(error)}`, "warning");
 			}
 		}
 	}
@@ -1532,7 +1435,7 @@ export default async function (pi: ExtensionAPI) {
 				header.push(`last successful scan: ${new Date(provider.lastScanned).toLocaleString()}`);
 			}
 			if (!live && provider.lastScanError) {
-				header.push(`latest live scan failed: ${provider.lastScanError}`);
+				header.push(`latest live scan failed: ${redactSecret(provider.lastScanError, provider.apiKey)}`);
 				header.push("Last known-good models and all saved presets remain available.");
 			}
 
@@ -1541,26 +1444,26 @@ export default async function (pi: ExtensionAPI) {
 				label: `${c.id}${modelFlags(c, provider.modelOverrides?.[c.id])}`,
 				description: modelDescription(c, provider),
 			}));
-			items.push({ value: "rescan", label: "⟳ Re-scan endpoint", description: "fetch fresh model list and re-register" });
+			items.push({ value: "rescan", label: "Re-scan source", description: "Fetch a fresh model list and re-register" });
 			items.push({
 				value: "rename",
-				label: "✎ Rename source",
-				description: `current: ${provider.name}`,
+				label: "Rename source",
+				description: `Current: ${provider.name}`,
 			});
 			items.push({
 				value: "auth",
-				label: "🔑 Authentication",
-				description: provider.apiKey ? "API key configured · replace or clear" : "anonymous · add an API key",
+				label: "Authentication",
+				description: provider.apiKey ? "API key configured · replace or clear" : "Anonymous · add an API key",
 			});
 			items.push({
 				value: "defaults",
-				label: "✎ Edit fallback defaults",
-				description: `used when server reports nothing — ctx ${fmt(provider.defaultContextWindow ?? null)} · max ${fmt(provider.defaultMaxTokens ?? null)}`,
+				label: "Fallback defaults",
+				description: `Used when the server reports nothing · ctx ${fmt(provider.defaultContextWindow ?? null)} · max ${fmt(provider.defaultMaxTokens ?? null)}`,
 			});
-			items.push({ value: "remove", label: "✗ Remove endpoint", description: "unregister provider and delete saved config" });
-			items.push({ value: "back", label: "← Back" });
+			items.push({ value: "remove", label: "Remove source", description: "Unregister the provider and delete its saved configuration" });
+			items.push({ value: "back", label: "Back" });
 
-			const action = await runSelect(ctx, `Endpoint: ${provider.name}`, items, header);
+			const action = await runSelect(ctx, `Source: ${provider.name}`, items, header);
 			if (!action || action === "back") return;
 
 			if (action.startsWith("model:")) {
@@ -1582,7 +1485,7 @@ export default async function (pi: ExtensionAPI) {
 					try {
 						const registered = await registerProvider(provider, live);
 						recordSuccessfulScan(provider, live.models, live.serverType, false);
-						upsertProvider(provider);
+						app.saveSource(provider);
 						ctx.ui.notify(
 							`Re-registered ${live.models.length} base model(s)${
 								registered.profileCount ? ` + ${registered.profileCount} profile(s)` : ""
@@ -1596,13 +1499,26 @@ export default async function (pi: ExtensionAPI) {
 					}
 				}
 			} else if (action === "rename") {
-				const newName = (await ctx.ui.input("New source name", provider.name))?.trim();
+				const enteredName = await runInput(
+					ctx,
+					"New source name",
+					provider.name,
+					"This name identifies the provider and its models in /model.",
+					(value) => {
+						const name = value.trim();
+						if (!name) return "Source name cannot be blank.";
+						if (app.listSources().some((candidate) => candidate.name === name && candidate.name !== provider.name)) {
+							return `Source "${name}" already exists.`;
+						}
+						return null;
+					},
+				);
+				const newName = enteredName?.trim();
 				if (newName && newName !== provider.name) {
-					const oldName = provider.name;
-					if (!renameProvider(oldName, newName)) {
-						ctx.ui.notify(`Cannot rename — "${newName}" already exists or "${oldName}" not found.`, "error");
+					const renamed = app.renameSource(provider, newName);
+					if (!renamed.ok) {
+						ctx.ui.notify(`Cannot rename — "${newName}" already exists or "${renamed.oldName}" was not found.`, "error");
 					} else {
-						provider.name = newName;
 						const catalog = live ??
 							(provider.cachedModels?.length
 								? {
@@ -1612,12 +1528,11 @@ export default async function (pi: ExtensionAPI) {
 								: undefined);
 						try {
 							await registerProvider(provider, catalog);
-							pi.unregisterProvider(oldName);
-							upsertProvider(provider);
+							pi.unregisterProvider(renamed.oldName);
+							app.saveSource(provider);
 							ctx.ui.notify(`Renamed to "${newName}"${live ? "" : " using the cached catalogue"}.`, "info");
 						} catch (error) {
-							renameProvider(newName, oldName);
-							provider.name = oldName;
+							app.renameSource(provider, renamed.oldName);
 							ctx.ui.notify(`Rename rolled back: ${errorMessage(error)}`, "error");
 						}
 					}
@@ -1635,9 +1550,9 @@ export default async function (pi: ExtensionAPI) {
 						...(provider.apiKey
 							? [{ value: "clear", label: "Clear API key", description: "remove the saved bearer credential" }]
 							: []),
-						{ value: "back", label: "← Back" },
+						{ value: "back", label: "Back" },
 					],
-					[provider.baseUrl, `current: ${provider.apiKey ? "API key configured" : "anonymous"}`],
+					[provider.baseUrl, `Current: ${provider.apiKey ? "API key configured" : "anonymous"}`],
 				);
 				if (!authAction || authAction === "back") continue;
 
@@ -1658,8 +1573,7 @@ export default async function (pi: ExtensionAPI) {
 					if (!confirmed) continue;
 				}
 
-				provider.apiKey = nextApiKey;
-				upsertProvider(provider);
+				app.setCredential(provider, nextApiKey);
 				const checked = await runLoader(
 					ctx,
 					`Validating ${provider.name} authentication...`,
@@ -1670,7 +1584,7 @@ export default async function (pi: ExtensionAPI) {
 					try {
 						await registerProvider(provider, checked);
 						recordSuccessfulScan(provider, checked.models, checked.serverType, false);
-						upsertProvider(provider);
+						app.saveSource(provider);
 						live = checked;
 						ctx.ui.notify(`Authentication saved and validated for ${provider.name}.`, "info");
 					} catch (error) {
@@ -1698,11 +1612,19 @@ export default async function (pi: ExtensionAPI) {
 					ctx.ui.notify("Authentication saved but could not be validated; the last known-good catalogue was retained.", "warning");
 				}
 			} else if (action === "defaults") {
+				const changed: string[] = [];
 				const cw = await askNumber(ctx, "Default context window (blank = keep)", String(provider.defaultContextWindow ?? 128000));
-				if (cw !== undefined) provider.defaultContextWindow = cw;
+				if (cw !== undefined) {
+					provider.defaultContextWindow = cw;
+					changed.push(`context ${fmt(cw)}`);
+				}
 				const mt = await askNumber(ctx, "Default max output tokens (blank = keep)", String(provider.defaultMaxTokens ?? 16384));
-				if (mt !== undefined) provider.defaultMaxTokens = mt;
-				upsertProvider(provider);
+				if (mt !== undefined) {
+					provider.defaultMaxTokens = mt;
+					changed.push(`max output ${fmt(mt)}`);
+				}
+				if (!changed.length) continue;
+				app.saveSource(provider);
 				const catalog = live ??
 					(provider.cachedModels?.length
 						? {
@@ -1712,14 +1634,18 @@ export default async function (pi: ExtensionAPI) {
 						: undefined);
 				try {
 					await registerProvider(provider, catalog);
+					ctx.ui.notify(`Fallback defaults saved: ${changed.join(" · ")}.`, "info");
 				} catch (error) {
 					ctx.ui.notify(`Defaults saved; provider remains on its last registered catalogue: ${errorMessage(error)}`, "warning");
 				}
 			} else if (action === "remove") {
-				const sure = await ctx.ui.confirm("Remove endpoint", `Remove "${provider.name}" (${provider.baseUrl})?`);
+				const sure = await ctx.ui.confirm(
+					"Remove source",
+					`Unregister "${provider.name}" and delete its saved configuration, cached catalogue, presets, and routing?`,
+				);
 				if (sure) {
 					pi.unregisterProvider(provider.name);
-					deleteProvider(provider.name);
+					app.removeSource(provider.name);
 					ctx.ui.notify(`Removed "${provider.name}".`, "info");
 					return;
 				}
@@ -1731,23 +1657,45 @@ export default async function (pi: ExtensionAPI) {
 	// Screen: add endpoint
 	// -----------------------------------------------------------------------
 
-	async function showAddScreen(ctx: ExtensionCommandContext, presetUrl?: string): Promise<void> {
-		let baseUrl = presetUrl ?? (await ctx.ui.input("Endpoint URL", "http://192.168.1.100:8080"))?.trim();
-		if (!baseUrl) return;
-		if (!baseUrl.startsWith("http")) baseUrl = `http://${baseUrl}`;
-		baseUrl = baseUrl.replace(/\/+$/, "");
+	async function showAddScreen(ctx: ExtensionCommandContext, presetUrl?: string, presetName?: string): Promise<void> {
+		const enteredUrl = presetUrl ?? await runInput(
+			ctx,
+			"Endpoint URL",
+			"http://192.168.1.100:8080",
+			"Enter the base URL of an OpenAI-compatible model server.",
+			(value) => {
+				if (!value.trim()) return "Endpoint URL cannot be blank.";
+				if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value.trim()) && !/^https?:\/\//i.test(value.trim())) {
+					return "Endpoint URL must use HTTP or HTTPS.";
+				}
+				try {
+					new URL(normalizeEndpointUrl(value));
+					return null;
+				} catch {
+					return "Enter a valid HTTP or HTTPS endpoint URL.";
+				}
+			},
+		);
+		if (!enteredUrl) return;
+		let baseUrl: string;
+		try {
+			baseUrl = normalizeEndpointUrl(enteredUrl);
+		} catch (error) {
+			ctx.ui.notify(errorMessage(error), "error");
+			return;
+		}
 
 		const authMode = await runSelect(
 			ctx,
 			"Endpoint authentication",
 			[
-				{ value: "none", label: "No API key", description: "connect without a configured bearer credential" },
+				{ value: "none", label: "No API key", description: "Connect without a configured bearer credential" },
 				{
 					value: "api-key",
 					label: "Enter API key",
-					description: "masked while typing · saved only in the private model-discovery config",
+					description: "Masked while typing · saved only in the private model-discovery configuration",
 				},
-				{ value: "cancel", label: "← Cancel" },
+				{ value: "cancel", label: "Cancel" },
 			],
 			[baseUrl, "The key is sent as an Authorization: Bearer header for discovery and inference."],
 		);
@@ -1789,7 +1737,21 @@ export default async function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const name = (await ctx.ui.input("Provider name", generateProviderName(baseUrl)))?.trim() || generateProviderName(baseUrl);
+		const suggestedName = presetName?.trim() || generateProviderName(baseUrl);
+		const enteredName = await runInput(
+			ctx,
+			"Source name",
+			suggestedName,
+			"This name identifies the provider and its models in /model.",
+			(value) => {
+				const name = value.trim();
+				if (!name) return "Source name cannot be blank.";
+				if (app.findSource(name)) return `Source "${name}" already exists. Open it from the home screen instead.`;
+				return null;
+			},
+		);
+		if (enteredName === undefined) return;
+		const name = enteredName.trim();
 
 		const provider: DiscoveredProvider = { name, baseUrl, apiKey };
 		const configs = live.models.map(extractModelConfig);
@@ -1810,8 +1772,8 @@ export default async function (pi: ExtensionAPI) {
 				label: `${c.id}${modelFlags(c, provider.modelOverrides?.[c.id])}`,
 				description: modelDescription(c, provider),
 			}));
-			items.push({ value: "register", label: "✓ Register endpoint", description: `save as "${name}" and make models available in /model` });
-			items.push({ value: "cancel", label: "✗ Cancel" });
+			items.push({ value: "register", label: "Register source", description: `Save as "${name}" and make models available in /model` });
+			items.push({ value: "cancel", label: "Cancel" });
 
 			const action = await runSelect(ctx, `Review: ${name}`, items, header);
 			if (!action || action === "cancel") {
@@ -1854,7 +1816,7 @@ export default async function (pi: ExtensionAPI) {
 				try {
 					await registerProvider(provider, live);
 					recordSuccessfulScan(provider, live.models, live.serverType, false);
-					upsertProvider(provider);
+					app.saveSource(provider);
 					ctx.ui.notify(
 						`Registered ${configs.length} model(s) from ${live.serverType} as "${name}". Use /model to select.`,
 						"info",
@@ -1873,41 +1835,33 @@ export default async function (pi: ExtensionAPI) {
 
 	async function showMainScreen(ctx: ExtensionCommandContext): Promise<void> {
 		for (;;) {
-			const providers = loadProviders();
-			const items: SelectItem[] = providers.map((p) => ({
-				value: `provider:${p.name}`,
-				label: p.name,
-				description: `${p.serverType ?? "?"} · ${p.baseUrl} · ${
-					p.lastScanError
-						? `${p.cachedModels?.length ? "cached" : "unavailable"} after failed live scan`
-						: `live scan ${p.lastScanned ? new Date(p.lastScanned).toLocaleString() : "never completed"}`
-				}`,
-			}));
-			items.push({ value: "add", label: "+ Add endpoint", description: "discover models from an OpenAI-compatible server" });
-			if (providers.length > 0) {
-				items.push({ value: "rescan-all", label: "⟳ Re-scan all", description: "refresh model lists from every endpoint" });
-			}
-			items.push({ value: "quit", label: "✗ Close" });
-
-			const action = await runSelect(ctx, "Model Discovery", items, [
-				providers.length === 0 ? "No endpoints yet — add your first one." : `${providers.length} endpoint(s) registered`,
-			]);
+			const providers = app.listSources();
+			const action = await runSelect(
+				ctx,
+				"Model Discovery",
+				buildHomeItems(providers),
+				buildHomeSummary(providers),
+			);
 			if (!action || action === "quit") return;
 
 			if (action === "add") {
 				await showAddScreen(ctx);
+			} else if (action === "diagnostics") {
+				await runTextView(ctx, "Model Discovery diagnostics", buildDiagnosticsLines(app.listSources()));
 			} else if (action === "rescan-all") {
-				const results = await runLoader(ctx, "Re-scanning all endpoints...", async () => {
+				const results = await runLoader(ctx, "Re-scanning all sources...", async (signal) => {
 					let live = 0;
 					let cached = 0;
 					let failed = 0;
-					for (const provider of loadProviders()) {
+					for (const provider of app.listSources()) {
+						if (signal.aborted) break;
 						try {
-							const registered = await registerProvider(provider);
+							const registered = await registerProvider(provider, undefined, signal);
 							recordSuccessfulScan(provider, registered.rawModels, registered.serverType, false);
-							upsertProvider(provider);
+							app.saveSource(provider);
 							live++;
 						} catch (error) {
+							if (signal.aborted) break;
 							recordFailedScan(provider, error, false);
 							if (provider.cachedModels?.length) {
 								try {
@@ -1915,14 +1869,14 @@ export default async function (pi: ExtensionAPI) {
 										models: provider.cachedModels,
 										serverType: provider.serverType ?? "OpenAI-compatible",
 									});
-									upsertProvider(provider);
+									app.saveSource(provider);
 									cached++;
 									continue;
 								} catch {
 									/* report below without removing the previously registered provider */
 								}
 							}
-							upsertProvider(provider);
+							app.saveSource(provider);
 							failed++;
 						}
 					}
@@ -1937,7 +1891,7 @@ export default async function (pi: ExtensionAPI) {
 				}
 			} else if (action.startsWith("provider:")) {
 				const name = action.slice("provider:".length);
-				const provider = loadProviders().find((p) => p.name === name);
+				const provider = app.findSource(name);
 				if (provider) await showEndpointScreen(ctx, provider);
 			}
 		}
@@ -1947,18 +1901,100 @@ export default async function (pi: ExtensionAPI) {
 	// Command: /discover — single entry point
 	// -----------------------------------------------------------------------
 
+	type ReportLevel = "info" | "warning" | "error";
+	function emitText(ctx: ExtensionCommandContext, text: string, level: ReportLevel = "info"): void {
+		if (ctx.hasUI) ctx.ui.notify(text, level);
+		else console.log(text);
+	}
+
+	async function showReport(ctx: ExtensionCommandContext, title: string, text: string): Promise<void> {
+		if (ctx.mode === "tui") await runTextView(ctx, title, text.split("\n"));
+		else emitText(ctx, text);
+	}
+
+	async function addSourceHeadlessly(
+		ctx: ExtensionCommandContext,
+		url: string,
+		providerName?: string,
+	): Promise<void> {
+		try {
+			const result = await discoverAndRegisterSource({ url, providerName });
+			emitText(
+				ctx,
+				`Registered source "${result.provider.name}" (${result.serverType}): ${result.models.length} base model(s)${result.profileCount ? ` + ${result.profileCount} preset model(s)` : ""}.`,
+			);
+		} catch (error) {
+			emitText(ctx, `Could not add source: ${errorMessage(error)}`, "error");
+		}
+	}
+
 	pi.registerCommand("discover", {
-		description: "Manage local model endpoints (llama.cpp, oMLX, Ollama, vLLM, ...)",
+		description: "Open model-source discovery or inspect it with /discover status",
+		getArgumentCompletions: (prefix) => completeDiscoverArgs(
+			prefix,
+			app.listSources().map((provider) => provider.name),
+		),
 		handler: async (args, ctx) => {
-			if (ctx.mode !== "tui") {
-				ctx.ui.notify("/discover requires interactive mode", "error");
-				return;
-			}
-			const url = args?.trim();
-			if (url) {
-				await showAddScreen(ctx, url.startsWith("http") ? url : `http://${url}`);
-			} else {
-				await showMainScreen(ctx);
+			const intent = parseDiscoverArgs(args);
+			switch (intent.kind) {
+				case "open":
+					if (ctx.mode === "tui") await showMainScreen(ctx);
+					else await showReport(ctx, "Model Discovery status", formatDiscoveryStatus(app.listSources()));
+					return;
+				case "status":
+					await showReport(ctx, "Model Discovery status", formatDiscoveryStatus(app.listSources()));
+					return;
+				case "doctor": {
+					const lines = buildDiagnosticsLines(app.listSources());
+					lines.push(
+						"",
+						"Actions",
+						"- Re-scan from the wizard to refresh live catalogues.",
+						"- Authentication secrets are configured only through the masked TUI.",
+					);
+					await showReport(ctx, "Model Discovery diagnostics", lines.join("\n"));
+					return;
+				}
+				case "paths":
+					await showReport(ctx, "Model Discovery paths", `Configuration: ${STORAGE_PATH}`);
+					return;
+				case "help":
+					await showReport(ctx, "Model Discovery help", DISCOVER_USAGE);
+					return;
+				case "add":
+					if (!intent.url) {
+						if (ctx.mode === "tui") await showAddScreen(ctx);
+						else emitText(ctx, `Missing source URL.\n${DISCOVER_USAGE}`, "error");
+						return;
+					}
+					if (ctx.mode === "tui") {
+						await showAddScreen(ctx, intent.url, intent.providerName);
+					} else {
+						await addSourceHeadlessly(ctx, intent.url, intent.providerName);
+					}
+					return;
+				case "remove": {
+					const provider = app.findSource(intent.name);
+					if (!provider) {
+						emitText(ctx, `Unknown source: ${intent.name}`, "error");
+						return;
+					}
+					if (!intent.confirmed && ctx.mode !== "tui") {
+						emitText(ctx, `Refusing to remove "${provider.name}" without --yes.`, "error");
+						return;
+					}
+					const confirmed = intent.confirmed || await ctx.ui.confirm(
+						"Remove source",
+						`Unregister "${provider.name}" and delete its saved configuration, cached catalogue, presets, and routing?`,
+					);
+					if (!confirmed) return;
+					pi.unregisterProvider(provider.name);
+					app.removeSource(provider.name);
+					emitText(ctx, `Removed source "${provider.name}".`);
+					return;
+				}
+				case "invalid":
+					emitText(ctx, `${intent.message}\n${DISCOVER_USAGE}`, "error");
 			}
 		},
 	});
@@ -1986,36 +2022,23 @@ export default async function (pi: ExtensionAPI) {
 			"Discover and register models from an OpenAI-compatible endpoint (llama.cpp, oMLX, Ollama, vLLM). Reads actual server config. Use when the user asks to add a local model server.",
 		parameters: discoverModelsParameters,
 		async execute(_toolCallId, params) {
-			let { url, providerName, apiKey } = params;
-			if (!url.startsWith("http")) url = `http://${url}`;
-			url = url.replace(/\/+$/, "");
-			providerName = providerName || generateProviderName(url);
-
-			let live: { models: Record<string, unknown>[]; serverType: string };
+			let result: Awaited<ReturnType<typeof discoverAndRegisterSource>>;
 			try {
-				live = await fetchModels(url, apiKey);
-			} catch (err) {
+				result = await discoverAndRegisterSource(params);
+			} catch (error) {
+				const message = errorMessage(error);
+				if (message === "Endpoint is online but reports no models.") {
+					return { content: [{ type: "text", text: message }], details: {} };
+				}
 				return {
-					content: [
-						{ type: "text", text: `Endpoint unavailable: ${err instanceof Error ? err.message : String(err)}` },
-					],
+					content: [{ type: "text", text: `Endpoint unavailable or registration failed: ${message}` }],
 					details: {},
 					isError: true,
 				};
 			}
-			if (live.models.length === 0) {
-				return { content: [{ type: "text", text: "Endpoint online but reports no models." }], details: {} };
-			}
 
-			const existing = loadProviders().find((p) => p.name === providerName);
-			const provider: DiscoveredProvider = existing
-				? { ...existing, baseUrl: url, apiKey: apiKey ?? existing.apiKey }
-				: { name: providerName, baseUrl: url, apiKey };
+			const { provider, models: configs, serverType, profileCount } = result;
 			try {
-				const { models: configs, profileCount } = await registerProvider(provider, live);
-				recordSuccessfulScan(provider, live.models, live.serverType, false);
-				upsertProvider(provider);
-
 				const lines = configs.map(
 					(c) =>
 						`- ${c.id}${modelFlags(c, provider.modelOverrides?.[c.id])}: ${modelDescription(c, provider)}`,
@@ -2030,12 +2053,12 @@ export default async function (pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text",
-							text: `Endpoint online (${live.serverType}). Registered ${configs.length} base model(s)${
+							text: `Endpoint online (${serverType}). Registered ${configs.length} base model(s)${
 								profileCount ? ` + ${profileCount} profile(s)` : ""
-							} as "${providerName}":\n${lines.join("\n")}${note}\n\nModels are now selectable via /model.`,
+							} as "${provider.name}":\n${lines.join("\n")}${note}\n\nModels are now selectable via /model.`,
 						},
 					],
-					details: { providerName, serverType: live.serverType, modelCount: configs.length, profileCount },
+					details: { providerName: provider.name, serverType, modelCount: configs.length, profileCount },
 				};
 			} catch (err) {
 				return {

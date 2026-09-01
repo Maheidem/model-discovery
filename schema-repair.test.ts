@@ -13,8 +13,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createServer, type AddressInfo } from "node:http";
+import { createServer } from "node:http";
 import { request as httpRequest } from "node:http";
+import type { AddressInfo } from "node:net";
 import {
 	describeToolSchemaRepair,
 	isLocalEndpointUrl,
@@ -218,7 +219,9 @@ test("nested $defs with root-relative $ref is inlined (reference bug)", () => {
 	assert.deepEqual(cyclic, []);
 	assertRefFree(schema);
 
-	const patch = (schema as Record<string, Record<string, Record<string, unknown>>>).properties.patch.properties;
+	const patch = (schema as {
+		properties: { patch: { properties: Record<string, unknown> } };
+	}).properties.patch.properties;
 	assert.deepEqual(patch.metrics, { type: "array", items: GUIDELINE_METRIC_INPUT }, "metrics.items must be the inlined def");
 	assert.equal((schema as { $defs?: unknown }).$defs, undefined, "$defs must not reach the wire");
 });
@@ -344,7 +347,9 @@ test("same-named nested defs with different content are both preserved", () => {
 	const { schema, repaired, dropped } = repairToolSchema(params);
 	assert.equal(repaired, true);
 	assert.deepEqual(dropped, []);
-	const props = (schema as Record<string, Record<string, Record<string, Record<string, unknown>>>>).properties;
+	const props = (schema as {
+		properties: Record<string, { properties: Record<string, { properties?: Record<string, unknown> }> }>;
+	}).properties;
 	assert.deepEqual(Object.keys(props.l.properties.v.properties ?? {}), ["onlyLeft"]);
 	assert.deepEqual(Object.keys(props.r.properties.v.properties ?? {}), ["onlyRight"]);
 	assertRefFree(schema);
@@ -408,7 +413,9 @@ test("defs referenced through a nested path resolve", () => {
 	};
 	const { schema, dropped } = repairToolSchema(params);
 	assert.deepEqual(dropped, [], "both defs live on the same nested node and must both hoist");
-	const flag = (schema as Record<string, Record<string, Record<string, Record<string, Record<string, unknown>>>>>).properties.outer.properties.list.items.properties.flag;
+	const flag = (schema as {
+		properties: { outer: { properties: { list: { items: { properties: { flag: unknown } } } } } };
+	}).properties.outer.properties.list.items.properties.flag;
 	assert.deepEqual(flag, { type: "boolean" });
 });
 

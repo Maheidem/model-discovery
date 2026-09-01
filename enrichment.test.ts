@@ -4,7 +4,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createServer, type AddressInfo, type IncomingMessage, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import {
 	detectServerType,
 	enrichModels,
@@ -168,7 +169,7 @@ test("oMLX: /v1/models values still win over enrichment", async () => {
 
 test("oMLX: the API key header is forwarded to the native endpoint", async () => {
 	const { url, close } = await jsonServer({
-		"/v1/models/status": (req) =>
+		"/v1/models/status": (req: IncomingMessage) =>
 			req.headers.authorization === "Bearer sekret"
 				? { models: [{ id: "m", max_context_window: 4096 }] }
 				: { models: [] },
@@ -219,7 +220,7 @@ test("enrichment never throws on connection refusal", async () => {
 test("unknown server types skip enrichment entirely", async () => {
 	const models = [{ id: "m" }];
 	await enrichModels("http://127.0.0.1:1", undefined, "MTPLX", models);
-	assert.equal(models[0]["__md"], undefined);
+	assert.equal((models[0] as Record<string, unknown>)["__md"], undefined);
 });
 
 // ---------------------------------------------------------------------------

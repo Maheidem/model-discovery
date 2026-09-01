@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": [
+    "index.ts",
+    "application.ts",
+    "commands.ts",
+    "storage.ts",
+    "ui-model.ts",
+    "profiles.ts",
+    "providers.ts",
+    "schema-repair.ts",
+    "ui/**/*.ts",
+    "*.test.ts"
+  ]
+}

@@ -1,6 +1,6 @@
 # @maheidem/model-discovery
 
-Interactive TUI for discovering and managing local AI model endpoints. Works with llama.cpp, oMLX, Ollama, vLLM, SGLang, LM Studio, and other OpenAI-compatible servers.
+A responsive, hierarchical Pi wizard for discovering and managing local AI model sources. It works with llama.cpp, oMLX, Ollama, vLLM, SGLang, LM Studio, and other OpenAI-compatible servers, with useful status and diagnostics in TUI, RPC, JSON, and print modes.
 
 ## Features
 
@@ -18,6 +18,8 @@ Interactive TUI for discovering and managing local AI model endpoints. Works wit
 - **Authenticated endpoints** — enroll, replace, validate, or clear bearer API keys through masked TUI input
 - **Multi-endpoint management** — add, rename, scan, and remove local model sources
 - **LLM-callable tool** — the `discover_models` tool can register endpoints on the agent's behalf
+- **Shared Pi UX** — responsive bordered wizard steps, searchable lists, injected keybindings, scrolling previews, cancellable loaders, and masked secrets
+- **Headless command surface** — stable status, diagnostics, paths, source listing, and explicit add/remove actions for RPC and scripts
 - **Persistent storage** in `~/.pi/agent/model-discovery.json`
 
 ## Installation
@@ -27,27 +29,54 @@ Interactive TUI for discovering and managing local AI model endpoints. Works wit
 pi install npm:@maheidem/model-discovery
 
 # Via git
-pi install git:github.com/Maheidem/model-discovery@v0.7.0
+pi install git:github.com/Maheidem/model-discovery
 ```
 
 ## Usage
 
-Run `/discover` in Pi to open the management TUI:
+Run bare `/discover` in TUI mode to open the source wizard:
 
-- **Add endpoint** — enter a URL, choose anonymous or API-key authentication, probe it, review models, and register
-- **Re-scan** — refresh models reported by an existing endpoint
+```text
+Sources → source details → model details → presets and adaptive routing
+        ↘ add / scan / authentication / diagnostics
+```
+
+The home screen shows source and cached-model health before offering the primary actions. Every list supports Pi's configured navigation/confirm/cancel bindings and type-to-filter. Escape returns to the logical parent. Long diagnostics and exact-request previews use a scrolling secondary view rather than clipping the footer.
+
+From the wizard you can:
+
+- **Add source** — enter a URL, choose anonymous or API-key authentication, probe it, review models, and register
+- **Re-scan** — refresh one source or every source while retaining last known-good catalogues on failure
 - **Edit model** — override context, max output, reasoning, or vision support
-- **Manage profiles** — create, edit, rename, or delete named variants
+- **Manage presets** — create, clone, edit, rename, preview, route, or delete named variants
 - **Rename source** — change the provider name shown by `/model`
-- **Remove** — unregister and delete an endpoint
+- **Authentication** — add, replace, validate, or clear a bearer credential through masked input
+- **Diagnostics** — inspect storage, source health, authentication state, and cached catalogue state without exposing secrets
+- **Remove source** — unregister it and delete its saved configuration after confirmation
 
-You can jump directly into adding an endpoint:
+The same root command has a scriptable surface. Bare `/discover` prints status outside TUI instead of silently doing nothing:
+
+```text
+/discover
+/discover status
+/discover doctor
+/discover paths
+/discover source list
+/discover source add http://192.168.1.100:8080
+/discover source add http://192.168.1.100:8080 --name my-llama
+/discover source remove my-llama --yes
+/discover help
+```
+
+The original direct-add shorthand remains compatible:
 
 ```text
 /discover http://192.168.1.100:8080
 ```
 
-Enrollment explicitly asks whether the endpoint is anonymous or requires an API key. API-key input is masked and is sent as `Authorization: Bearer <key>` for both `/v1/models` discovery and inference. The key is stored unencrypted in `~/.pi/agent/model-discovery.json`; the extension writes that file atomically with owner-only (`0600`) permissions. Use **Authentication** on an existing endpoint to replace, validate, or clear its key without losing the cached catalogue.
+In TUI mode, add commands enter the full enrollment wizard. Outside TUI, source add probes and registers an anonymous source using server-reported/default values. Configure credentials through the masked TUI rather than command arguments. Source removal requires confirmation in TUI and requires explicit `--yes` outside TUI.
+
+Enrollment explicitly asks whether the source is anonymous or requires an API key. API-key input is masked and is sent as `Authorization: Bearer <key>` for both `/v1/models` discovery and inference. The key is stored unencrypted in `~/.pi/agent/model-discovery.json`; the extension writes that file atomically with owner-only (`0600`) permissions. Use **Authentication** on an existing source to replace, validate, or clear its key without losing the cached catalogue.
 
 The LLM-callable tool remains available:
 
@@ -285,23 +314,31 @@ Legacy implicit routing created by early v0.6 development builds is migrated onc
 
 ## Storage
 
-Discovered providers, cached catalogues, model overrides, presets, and explicit routing maps are persisted in:
+Discovered providers, cached catalogues, model overrides, presets, credentials, and explicit routing maps are persisted atomically with owner-only (`0600`) permissions in:
 
 ```text
 ~/.pi/agent/model-discovery.json
 ```
 
+If this JSON is corrupt, startup falls back to an empty source list and preserves the unreadable file beside it as `model-discovery.json.corrupt-<timestamp>` instead of overwriting the evidence. Existing profile-routing schema migrations remain automatic.
+
 ## Requirements
 
 - Pi coding agent **0.84.0 or newer** (`samplingParams` support is required for model aliases)
-- TUI support
-- Network access to an OpenAI-compatible model server
+- TUI mode for interactive enrollment, masked credentials, and profile editing
+- Network access to an OpenAI-compatible model server for live discovery (cached status/configuration remains available offline)
 
 ## Development
 
+All suites run with isolated temporary `HOME` directories:
+
 ```bash
+npm run typecheck
 npm test
+npm pack --dry-run
 ```
+
+`prepack` runs strict typechecking and the complete offline suite automatically. Provider detection, enrichment, profile semantics, routing, schema repair, storage, application actions, responsive wizard components, command modes, and adapter registration all have regression coverage.
 
 ## License
 

@@ -1,3 +1,6 @@
 .planning/
 *.test.ts
+tests/
 docs/
+scripts/
+tsconfig.json
