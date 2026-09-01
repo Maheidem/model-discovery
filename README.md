@@ -207,6 +207,68 @@ If Pi has an `enabledModels` scope, press **Tab** in `/model` to switch from sco
 
 Profiles are retained if a model temporarily disappears during a re-scan.
 
+## Tool-schema repair (local endpoints)
+
+llama.cpp's JSON-schema→grammar converter — the one behind llama.cpp, llama-swap, LM
+Studio, and LiteLLM routes that forward to them — resolves `$ref` pointers **only
+against the root of a tool schema document**. MCP servers that build schemas by nesting
+Pydantic `model_json_schema()` output inside a hand-written parent routinely leave
+`$defs` on an inner node while the `$ref`s inside it stay root-relative:
+
+```jsonc
+{ "properties": { "patch": {
+    "$defs": { "GuidelineMetricInput": { /* ... */ } },        // defs live here
+    "properties": { "metrics": { "items": { "$ref": "#/$defs/GuidelineMetricInput" } } }
+}}}
+```
+
+The pointer resolves against the document root, where `$defs` is not — so the server
+rejects the **entire request**:
+
+```text
+HTTP 400 {"code":400,"message":"JSON schema conversion failed:
+          Error resolving ref #/$defs/GuidelineMetricInput: $defs not in {...}"}
+```
+
+Because the offending tool rides along in every tool list, *every* message in the
+session fails, which looks like a broken endpoint, proxy, or model discovery rather
+than a bad upstream schema.
+
+A second llama.cpp b10612 bug was verified independently: `maxLength: 2000` below
+an array's `items` schema produces `Failed to initialize samplers: failed to parse
+grammar`, while 1999, 2001, and even 65536 all compile. This affected the
+`okto_pulse_move_card` tool even before any `$ref` repair.
+
+For self-hosted endpoints (private/loopback URL, or a detected local engine) the
+extension normalises outgoing tool schemas in `before_provider_request`:
+
+- `$defs` / `definitions` found at any depth are hoisted to a root registry, with
+collisions de-duplicated and local refs rewritten to match;
+- every `$ref` is inlined iteratively, so refs-to-refs collapse;
+- unresolvable or recursive `$ref`s become permissive nodes instead of a hard 400;
+- `$ref` / `$defs` never reach the wire, and annotation siblings (`description`,
+`title`) are preserved;
+- the exact nested-array `maxLength: 2000` failure is sent as 2001. This is the
+least-permissive working neighbour; the MCP server still validates its real 2000 limit.
+
+Cloud APIs and clean payloads are left byte-identical (the payload object's identity is
+returned, no cloning). Repairing a 521-tool catalogue costs ~1.5 ms. Opt out per
+provider with `"repairToolSchemas": false` in `~/.pi/agent/model-discovery.json`, or
+globally with `PI_MODEL_DISCOVERY_NO_SCHEMA_REPAIR=1`. Each distinct repair is logged
+once as `[model-discovery] <provider>: repaired N local tool schema(s): …`.
+
+Live verification against llama-swap v251 → llama.cpp b10612: the raw 521-tool MCP
+catalogue returned HTTP 400; all 16 affected schemas were repaired in flight; the same
+request then returned HTTP 200 with no residual `$ref`/`$defs` on the wire.
+
+Verification:
+
+```bash
+npm test                                              # includes schema-repair.test.ts
+node --experimental-strip-types scripts/live-schema-repair-check.ts http://HOST
+node --experimental-strip-types scripts/bisect-grammar.ts http://HOST MODEL FILTER
+```
+
 ## Offline resilience
 
 Every successful live scan atomically persists the raw model catalogue as the source's last known-good cache. Saved sources are scanned independently and concurrently at startup. If one source is offline, times out, rejects its credentials, or returns a malformed response:

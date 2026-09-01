@@ -46,6 +46,12 @@ import {
 	redactSecret,
 	type ModelConfig,
 } from "./providers.ts";
+import {
+	describeToolSchemaRepair,
+	isLocalEndpointUrl,
+	repairRequestToolSchemas,
+	type ToolSchemaRepairReport,
+} from "./schema-repair.ts";
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import os from "node:os";
@@ -73,6 +79,12 @@ interface DiscoveredProvider {
 	profileSchemaVersion?: number;
 	cachedModels?: Record<string, unknown>[];
 	compat?: Record<string, unknown>;
+	/**
+	 * Inline $defs/$ref in outgoing tool schemas for this endpoint (default: true for
+	 * local/self-hosted endpoints, where llama.cpp-style grammar converters reject any
+	 * $ref that is not resolvable at the document root). Set false to send verbatim.
+	 */
+	repairToolSchemas?: boolean;
 	/** Last successful live catalogue refresh (legacy name retained in storage). */
 	lastScanned?: number;
 	lastScanAttempt?: number;
@@ -267,7 +279,35 @@ export default async function (pi: ExtensionAPI) {
 	};
 	const thinkingRoutes = new Map<string, RuntimeThinkingRoutes>();
 	const fixedProfileLabels = new Map<string, string>();
+	/** Providers whose outgoing tool schemas get local grammar compatibility repair. */
+	const schemaRepairProviders = new Set<string>();
+	/** Repair notices already surfaced, so a per-request hook never spams the log. */
+	const schemaRepairNotices = new Set<string>();
 	const routeKey = (providerName: string, modelId: string): string => `${providerName}/${modelId}`;
+
+	/**
+	 * llama.cpp (and llama-swap / LM Studio / LiteLLM routes that forward to it) has
+	 * strict JSON-schema→grammar compatibility limits: root-scoped $ref resolution and,
+	 * in b10612, one exact nested maxLength parser failure. A single incompatible MCP
+	 * tool makes *every* message 400. Local endpoints get their schemas normalised;
+	 * cloud APIs stay byte-identical. See schema-repair.ts.
+	 */
+	function shouldRepairToolSchemas(provider: DiscoveredProvider, serverType: string): boolean {
+		if (provider.repairToolSchemas === false) return false;
+		if (process.env.PI_MODEL_DISCOVERY_NO_SCHEMA_REPAIR) return false;
+		if (provider.repairToolSchemas === true) return true;
+		const LOCAL_ENGINES = ["llama.cpp", "oMLX", "Ollama", "vLLM", "SGLang", "LM Studio", "llama-swap"];
+		return LOCAL_ENGINES.some((needle) => serverType.toLowerCase().includes(needle.toLowerCase())) || isLocalEndpointUrl(provider.baseUrl);
+	}
+
+	function noteToolSchemaRepair(providerName: string, report: ToolSchemaRepairReport): void {
+		if (!report.changed) return;
+		const summary = describeToolSchemaRepair(report);
+		const signature = `${providerName}::${summary}`;
+		if (schemaRepairNotices.has(signature)) return;
+		schemaRepairNotices.add(signature);
+		console.error(`[model-discovery] ${providerName}: ${summary}`);
+	}
 
 	// -----------------------------------------------------------------------
 	// Provider registration with Pi's model registry
@@ -291,6 +331,8 @@ export default async function (pi: ExtensionAPI) {
 		if (serverType === "llama.cpp" || serverType === "oMLX" || serverType === "Ollama") {
 			if (compat.supportsDeveloperRole === undefined) compat.supportsDeveloperRole = false;
 		}
+		if (shouldRepairToolSchemas(provider, serverType)) schemaRepairProviders.add(provider.name);
+		else schemaRepairProviders.delete(provider.name);
 		if (serverType === "oMLX") {
 			// Preserve the pre-profile base-model behavior. Fixed and adaptive profile
 			// aliases supply their own complete chat-template kwargs independently.
@@ -414,9 +456,27 @@ export default async function (pi: ExtensionAPI) {
 	}
 
 	pi.on("before_provider_request", (event, ctx) => {
+		let payload: unknown = event.payload;
+		let touched = false;
+
 		const active = activeThinkingRoute(ctx);
-		if (!active) return undefined;
-		return applyThinkingProfileRoute(event.payload, active.profile, active.runtime.repetitionPenaltyKey);
+		if (active) {
+			payload = applyThinkingProfileRoute(payload, active.profile, active.runtime.repetitionPenaltyKey);
+			touched = true;
+		}
+
+		// Repair local tool schemas so llama.cpp-style grammar converters accept them.
+		const providerName = ctx.model?.provider;
+		if (providerName && schemaRepairProviders.has(providerName)) {
+			const repaired = repairRequestToolSchemas(payload);
+			if (repaired.report.changed) {
+				noteToolSchemaRepair(providerName, repaired.report);
+				payload = repaired.payload;
+				touched = true;
+			}
+		}
+
+		return touched ? payload : undefined;
 	});
 
 	const updateThinkingProfileStatus = (ctx: ExtensionContext): void => {
