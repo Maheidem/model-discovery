@@ -28,7 +28,8 @@
     "profiles.ts",
     "providers.ts",
     "schema-repair.ts",
-    "ui/wizard-shell.ts",
+    "version.ts",
+    "ui/",
     "README.md",
     "LICENSE"
   ],

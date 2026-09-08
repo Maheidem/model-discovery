@@ -18,7 +18,19 @@
     "profiles.ts",
     "providers.ts",
     "schema-repair.ts",
+    "version.ts",
     "ui/**/*.ts",
-    "*.test.ts"
+    "*.test.ts",
+    "tests/**/*.ts"
+  ],
+  // Vendored byte-identical from skills/pi-extension-builder (guarded by
+  // scripts/check-vendored.mjs). It is the unadapted control-panel template
+  // and imports ../config.ts, ../metadata.ts and application.ts#ExtensionController
+  // + #formatSize, which do not exist in this extension's layout — so it is
+  // kept out of the compile graph until slice 1 replaces it with the
+  // model-discovery panel model. Nothing imports it yet; byte-identity (not
+  // typechecking) is the guard. See ui/VENDORED.sha256.
+  "exclude": [
+    "ui/panel-model.ts"
   ]
 }
