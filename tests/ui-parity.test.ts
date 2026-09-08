@@ -21,7 +21,7 @@
  *   S3 (config parity `cfg:` apply + destructive confirms, PLAN §7):
  *     source:remove, source:rename, source:credential, source:defaults,
  *     model:<id>:vision, model:<id>:contextWindow, model:<id>:maxTokens,
- *     preset:<slug>, preset:<slug>:<field>, preset:<slug>:remove,
+ *     preset:<modelId>:<slug>, preset:<modelId>:<slug>:<field>, preset:<modelId>:<slug>:remove,
  *     routing:<modelId>:level:<level>, routing:<modelId>:conventional,
  *     routing:<modelId>:remove
  * ---------------------------------------------------------------------------
@@ -51,6 +51,7 @@ const SAMPLES: Record<string, string> = {
 	"<url>": "http://127.0.0.1:8112/v1",
 	"<name>": "parity-source",
 	"<id>": "qwen3-32b",
+	"<modelId>": "qwen3-32b",
 	"<slug>": "thinking",
 	"<field>": "temperature",
 	"<level>": "core",
@@ -177,9 +178,9 @@ test("every inventory key is an implemented panel row or a shrinking pending key
 		"model:<id>:maxTokens",
 		"model:<id>:vision",
 		"paths",
-		"preset:<slug>",
-		"preset:<slug>:<field>",
-		"preset:<slug>:remove",
+		"preset:<modelId>:<slug>",
+		"preset:<modelId>:<slug>:<field>",
+		"preset:<modelId>:<slug>:remove",
 		"presets",
 		"routing",
 		"routing:<modelId>:conventional",

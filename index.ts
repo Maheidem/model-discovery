@@ -70,7 +70,34 @@ import {
 	formatDiscoveryStatus,
 	sourceAvailability,
 } from "./ui-model.ts";
-import { WizardInput, WizardSecretInput, WizardSelect, WizardTextView } from "./ui/wizard-shell.ts";
+import {
+	BACK_KEY,
+	buildEndpointSnapshot,
+	buildModelPickerSnapshot,
+	buildModelSnapshot,
+	buildPresetSnapshot,
+	buildPresetsSnapshot,
+	buildRoutingSnapshot,
+	buildSourcePickerSnapshot,
+	presetFieldKey,
+	presetKey,
+	PRESET_FIELD_ORDER,
+	type PresetField,
+} from "./ui/endpoint-panel.ts";
+import {
+	ADD_FALLBACK_CTX_KEY,
+	ADD_FALLBACK_MAX_KEY,
+	ADD_KEY_KEY,
+	ADD_NAME_KEY,
+	ADD_REGISTER_KEY,
+	ADD_SCAN_KEY,
+	ADD_URL_KEY,
+	buildAddModelSnapshot,
+	buildAddSnapshot,
+} from "./ui/add-panel.ts";
+import { buildReportSnapshot } from "./ui/report-panel.ts";
+import { SecretField } from "./ui/secret-field.ts";
+import { PAGE_NEXT_KEY, PAGE_PREV_KEY } from "./ui/panel-frame.ts";
 import { SettingsPanel, type PanelActionResult, type PanelResult } from "./ui/settings-panel.ts";
 import { buildHomeSnapshot, formatAge, type HomeSnapshotInput, type HomeSourceInput } from "./ui/home.ts";
 import { modelDiscoveryVersion } from "./version.ts";
@@ -370,74 +397,11 @@ export default async function (pi: ExtensionAPI) {
 	// UI helpers (Pi-standard SelectList dialog)
 	// -----------------------------------------------------------------------
 
-	async function runSelect(
-		ctx: ExtensionCommandContext,
-		title: string,
-		items: SelectItem[],
-		headerLines: string[] = [],
-	): Promise<string | null> {
-		return await ctx.ui.custom<string | null>(
-			(tui, theme, keybindings, done) => new WizardSelect({
-				theme,
-				keybindings,
-				title,
-				items,
-				headerLines,
-				requestRender: () => tui.requestRender(),
-				done,
-			}),
-			{
-				overlay: true,
-				overlayOptions: { anchor: "center", width: 88, minWidth: 36, maxHeight: "90%", margin: 1 },
-			},
-		);
-	}
 
-	async function runTextView(
-		ctx: ExtensionCommandContext,
-		title: string,
-		lines: string[],
-	): Promise<void> {
-		await ctx.ui.custom<void>(
-			(tui, theme, keybindings, done) => new WizardTextView({
-				theme,
-				keybindings,
-				title,
-				lines,
-				requestRender: () => tui.requestRender(),
-				done: () => done(),
-			}),
-			{
-				overlay: true,
-				overlayOptions: { anchor: "center", width: 88, minWidth: 36, maxHeight: "90%", margin: 1 },
-			},
-		);
-	}
 
-	async function runInput(
-		ctx: ExtensionCommandContext,
-		title: string,
-		initialValue = "",
-		description?: string,
-		validate?: (value: string) => string | null,
-	): Promise<string | undefined> {
-		return await ctx.ui.custom<string | undefined>(
-			(tui, theme, keybindings, done) => new WizardInput({
-				theme,
-				keybindings,
-				title,
-				description,
-				initialValue,
-				validate,
-				requestRender: () => tui.requestRender(),
-				done,
-			}),
-			{
-				overlay: true,
-				overlayOptions: { anchor: "center", width: 72, minWidth: 36, maxHeight: "90%", margin: 1 },
-			},
-		);
-	}
+
+
+
 
 	async function runLoader<T>(
 		ctx: ExtensionCommandContext,
@@ -472,47 +436,9 @@ export default async function (pi: ExtensionAPI) {
 		);
 	}
 
-	async function askSecret(
-		ctx: ExtensionCommandContext,
-		title: string,
-		description: string,
-	): Promise<string | undefined> {
-		return await ctx.ui.custom<string | undefined>(
-			(tui, theme, keybindings, done) => new WizardSecretInput({
-				theme,
-				keybindings,
-				title,
-				description,
-				requestRender: () => tui.requestRender(),
-				done,
-			}),
-			{
-				overlay: true,
-				overlayOptions: { anchor: "center", width: 72, minWidth: 36, maxHeight: "90%", margin: 1 },
-			},
-		);
-	}
 
-	async function askNumber(
-		ctx: ExtensionCommandContext,
-		title: string,
-		initialValue: string,
-	): Promise<number | undefined> {
-		const raw = await runInput(
-			ctx,
-			title,
-			initialValue,
-			"Enter a positive whole number. Clear the field and submit to keep the current value.",
-			(value) => {
-				const normalized = value.trim().replace(/[,._\s]/g, "");
-				if (!normalized) return null;
-				if (!/^\d+$/.test(normalized) || Number(normalized) <= 0) return "Enter a positive whole number greater than zero.";
-				return null;
-			},
-		);
-		const normalized = raw?.trim().replace(/[,._\s]/g, "");
-		return normalized ? Number(normalized) : undefined;
-	}
+
+
 
 	function modelFlags(c: ModelConfig, ov?: ModelOverride): string {
 		const flags: string[] = [];
@@ -537,47 +463,9 @@ export default async function (pi: ExtensionAPI) {
 		return value === undefined ? "omitted (inherits base behavior)" : value ? "true" : "false";
 	}
 
-	async function chooseOptionalBoolean(
-		ctx: ExtensionCommandContext,
-		title: string,
-		current: boolean | undefined,
-	): Promise<boolean | undefined | null> {
-		const currentValue = current === undefined ? "omit" : String(current);
-		const choices: SelectItem[] = [
-			{ value: "omit", label: "Omit", description: "do not fix this key in the profile" },
-			{ value: "true", label: "true" },
-			{ value: "false", label: "false" },
-		];
-		const selected = await runSelect(
-			ctx,
-			title,
-			[...choices.filter((item) => item.value === currentValue), ...choices.filter((item) => item.value !== currentValue)],
-			[`current: ${optionalBooleanDescription(current)}`],
-		);
-		if (selected === null) return null;
-		if (selected === "omit") return undefined;
-		return selected === "true";
-	}
 
-	async function chooseReasoningEffort(
-		ctx: ExtensionCommandContext,
-		current: string | undefined,
-	): Promise<(typeof REASONING_EFFORTS)[number] | undefined | null> {
-		const currentValue = current ?? "omit";
-		const choices: SelectItem[] = [
-			{ value: "omit", label: "Omit", description: "do not fix this key in the profile" },
-			...REASONING_EFFORTS.map((effort) => ({ value: effort, label: effort })),
-		];
-		const selected = await runSelect(
-			ctx,
-			"reasoning_effort",
-			[...choices.filter((item) => item.value === currentValue), ...choices.filter((item) => item.value !== currentValue)],
-			[`current: ${current ?? "omitted (inherits base behavior)"}`],
-		);
-		if (selected === null) return null;
-		if (selected === "omit") return undefined;
-		return selected as (typeof REASONING_EFFORTS)[number];
-	}
+
+
 
 	type ProfileSamplingField = {
 		key: keyof ProfileSampling;
@@ -604,36 +492,7 @@ export default async function (pi: ExtensionAPI) {
 		];
 	}
 
-	async function chooseOptionalSamplingValue(
-		ctx: ExtensionCommandContext,
-		field: ProfileSamplingField,
-		current: number | undefined,
-	): Promise<number | undefined | null> {
-		const action = await runSelect(
-			ctx,
-			field.label,
-			[
-				{ value: "set", label: "Set value", description: field.description },
-				{ value: "omit", label: "Omit", description: "do not send this key; use the server/model default" },
-			],
-			[`current: ${current ?? "omitted (server/model default)"}`],
-		);
-		if (action === null) return null;
-		if (action === "omit") return undefined;
 
-		const raw = await runInput(
-			ctx,
-			`Value for ${field.label}`,
-			String(current ?? field.example),
-			field.description,
-			(value) => {
-				const trimmed = value.trim();
-				if (!trimmed) return "Enter a numeric value, or return and choose Omit.";
-				return validateProfileSampling({ [field.key]: Number(trimmed) });
-			},
-		);
-		return raw === undefined ? null : Number(raw.trim());
-	}
 
 	function profileDescription(
 		profile: ModelProfile,
@@ -656,24 +515,7 @@ export default async function (pi: ExtensionAPI) {
 			.join(" · ");
 	}
 
-	function profileRoutingHeader(
-		routing: ModelProfileRouting | undefined,
-		profiles: readonly ModelProfile[],
-	): string[] {
-		if (!routing) return ["Adaptive Shift-Tab routing: not configured (base and fixed aliases are unchanged)"];
-		const analysis = analyzeExplicitProfileRouting(routing, profiles);
-		if (analysis.errors.length > 0) {
-			return [
-				`Adaptive Shift-Tab routing: invalid${routing.enabled ? "" : " (disabled)"}`,
-				...analysis.errors.map((error) => `⚠ ${error}`),
-			];
-		}
-		return [
-			`Adaptive Shift-Tab routing: ${routing.enabled ? `enabled as @${routing.aliasSlug}` : "disabled"}`,
-			`off → ${routing.levels.off} · minimal → ${routing.levels.minimal} · low → ${routing.levels.low}`,
-			`medium → ${routing.levels.medium} · high → ${routing.levels.high} · xhigh → ${routing.levels.xhigh} · max → ${routing.levels.max}`,
-		];
-	}
+
 
 	function profilesWithCandidate(
 		provider: DiscoveredProvider,
@@ -687,19 +529,7 @@ export default async function (pi: ExtensionAPI) {
 		return profiles.map((profile, profileIndex) => (profileIndex === index ? candidate : profile));
 	}
 
-	async function promptProfileSlug(
-		ctx: ExtensionCommandContext,
-		initial: string,
-	): Promise<string | null> {
-		const answer = await runInput(
-			ctx,
-			"Preset name",
-			initial || "thinking-medium",
-			"Use a short slug for the fixed model alias and routing map.",
-			(value) => validateProfileSlug(value.trim()),
-		);
-		return answer === undefined ? null : answer.trim();
-	}
+
 
 	function validateProfileForProvider(
 		provider: DiscoveredProvider,
@@ -738,143 +568,7 @@ export default async function (pi: ExtensionAPI) {
 		| { action: "delete" }
 		| null;
 
-	async function showProfileEditor(
-		ctx: ExtensionCommandContext,
-		provider: DiscoveredProvider,
-		config: ModelConfig,
-		allConfigs: ModelConfig[],
-		serverType: string,
-		existing?: ModelProfile,
-		template?: ModelProfile,
-	): Promise<ProfileEditorResult> {
-		const source = existing ?? template;
-		const initialSlug = source?.slug ?? (await promptProfileSlug(ctx, ""));
-		if (!initialSlug) return null;
-		const profile: ModelProfile = {
-			slug: initialSlug,
-			...(source?.chatTemplateKwargs
-				? { chatTemplateKwargs: { ...source.chatTemplateKwargs } }
-				: {}),
-			...(source?.sampling ? { sampling: { ...source.sampling } } : {}),
-			...(source?.exposeAsModel !== undefined ? { exposeAsModel: source.exposeAsModel } : {}),
-		};
 
-		for (;;) {
-			const kwargs = profile.chatTemplateKwargs ?? {};
-			const sampling = profile.sampling ?? {};
-			const samplingFields = profileSamplingFields(serverType);
-			const repetitionPenaltyKey = repetitionPenaltyKeyForServer(serverType);
-			const currentRouting = app.profileRouting(provider, config.id);
-			const previewRouting = currentRouting
-				? { ...currentRouting, levels: { ...currentRouting.levels } }
-				: undefined;
-			if (previewRouting && existing && existing.slug !== profile.slug) {
-				previewRouting.levels = Object.fromEntries(
-					Object.entries(previewRouting.levels).map(([level, slug]) => [
-						level,
-						slug === existing.slug ? profile.slug : slug,
-					]),
-				) as Record<ThinkingLevel, string>;
-			}
-			const items: SelectItem[] = [
-				{ value: "rename", label: "Preset name", description: profile.slug },
-				{
-					value: "expose",
-					label: "Show as fixed model in /model",
-					description: profile.exposeAsModel === false ? "hidden (still available to adaptive routing)" : "visible",
-				},
-				{
-					value: "enable",
-					label: "enable_thinking",
-					description: optionalBooleanDescription(kwargs.enable_thinking),
-				},
-				{
-					value: "effort",
-					label: "reasoning_effort",
-					description: kwargs.reasoning_effort ?? "omitted (inherits base behavior)",
-				},
-				{
-					value: "preserve",
-					label: "preserve_thinking",
-					description: optionalBooleanDescription(kwargs.preserve_thinking),
-				},
-				...samplingFields.map((field) => ({
-					value: `sampling:${field.key}`,
-					label: field.label,
-					description: `${sampling[field.key] ?? "omitted (server/model default)"} · ${field.description}`,
-				})),
-				{ value: "save", label: "Save preset", description: profileModelId(config.id, profile.slug) },
-			];
-			if (existing) items.push({ value: "delete", label: "Delete preset", description: "Requires confirmation" });
-			items.push({ value: "cancel", label: "Cancel" });
-
-			const action = await runSelect(ctx, `Preset: ${profile.slug}`, items, [
-				`model id: ${profileModelId(config.id, profile.slug)} → ${config.id}`,
-				`thinking kwargs: ${JSON.stringify(kwargs)}`,
-				`sampling params: ${JSON.stringify(buildProfileSamplingParams(profile.sampling, repetitionPenaltyKey))}`,
-				...profileRoutingHeader(
-					previewRouting,
-					profilesWithCandidate(provider, config.id, profile, existing?.slug),
-				),
-				"This preset changes adaptive routing only when explicitly mapped to a Pi level.",
-				"Omitted values use the server/model default.",
-			]);
-			if (!action || action === "cancel") return null;
-
-			if (action === "rename") {
-				const slug = await promptProfileSlug(ctx, profile.slug);
-				if (slug) profile.slug = slug;
-			} else if (action === "expose") {
-				profile.exposeAsModel = profile.exposeAsModel === false;
-			} else if (action === "enable") {
-				const value = await chooseOptionalBoolean(ctx, "enable_thinking", kwargs.enable_thinking);
-				if (value === null) continue;
-				if (value === undefined) delete kwargs.enable_thinking;
-				else kwargs.enable_thinking = value;
-				if (Object.keys(kwargs).length > 0) profile.chatTemplateKwargs = kwargs;
-				else delete profile.chatTemplateKwargs;
-			} else if (action === "effort") {
-				const value = await chooseReasoningEffort(ctx, kwargs.reasoning_effort);
-				if (value === null) continue;
-				if (value === undefined) delete kwargs.reasoning_effort;
-				else kwargs.reasoning_effort = value;
-				if (Object.keys(kwargs).length > 0) profile.chatTemplateKwargs = kwargs;
-				else delete profile.chatTemplateKwargs;
-			} else if (action === "preserve") {
-				const value = await chooseOptionalBoolean(ctx, "preserve_thinking", kwargs.preserve_thinking);
-				if (value === null) continue;
-				if (value === undefined) delete kwargs.preserve_thinking;
-				else kwargs.preserve_thinking = value;
-				if (Object.keys(kwargs).length > 0) profile.chatTemplateKwargs = kwargs;
-				else delete profile.chatTemplateKwargs;
-			} else if (action.startsWith("sampling:")) {
-				const key = action.slice("sampling:".length) as keyof ProfileSampling;
-				const field = samplingFields.find((candidate) => candidate.key === key);
-				if (!field) continue;
-				const value = await chooseOptionalSamplingValue(ctx, field, sampling[key]);
-				if (value === null) continue;
-				if (value === undefined) delete sampling[key];
-				else sampling[key] = value;
-				if (Object.keys(sampling).length > 0) profile.sampling = sampling;
-				else delete profile.sampling;
-			} else if (action === "save") {
-				const error = validateProfileForProvider(provider, config, allConfigs, profile, existing?.slug);
-				if (error) {
-					ctx.ui.notify(error, "error");
-					continue;
-				}
-				return { action: "save", profile };
-			} else if (action === "delete" && existing) {
-				const routing = app.profileRouting(provider, config.id);
-				const routed = routing && Object.values(routing.levels).includes(existing.slug);
-				const confirmed = await ctx.ui.confirm(
-					"Delete preset",
-					`Delete "${existing.slug}"?${routed ? " The adaptive route will become invalid until those levels are remapped." : ""}`,
-				);
-				if (confirmed) return { action: "delete" };
-			}
-		}
-	}
 
 	async function persistProfileChange(
 		ctx: ExtensionCommandContext,
@@ -921,21 +615,7 @@ export default async function (pi: ExtensionAPI) {
 		if (refreshed) await pi.setModel(refreshed);
 	}
 
-	async function choosePreset(
-		ctx: ExtensionCommandContext,
-		title: string,
-		profiles: readonly ModelProfile[],
-		serverType: string,
-		current?: string,
-	): Promise<string | null> {
-		const items: SelectItem[] = profiles.map((profile) => ({
-			value: profile.slug,
-			label: profile.slug,
-			description: profileDescription(profile, serverType, undefined),
-		}));
-		items.sort((a, b) => (a.value === current ? -1 : b.value === current ? 1 : a.label.localeCompare(b.label)));
-		return runSelect(ctx, title, items, [current ? `current: ${current}` : "No preset selected"]);
-	}
+
 
 	function conventionalPreset(profiles: readonly ModelProfile[], kind: "off" | "low" | "medium" | "xhigh") {
 		return profiles.find((profile) => {
@@ -958,882 +638,31 @@ export default async function (pi: ExtensionAPI) {
 		};
 	}
 
-	async function previewProfileRouting(
-		ctx: ExtensionCommandContext,
-		config: ModelConfig,
-		routing: ModelProfileRouting,
-		profiles: readonly ModelProfile[],
-		serverType: string,
-	): Promise<void> {
-		const analysis = analyzeExplicitProfileRouting(routing, profiles);
-		if (!analysis.routes) {
-			ctx.ui.notify(analysis.errors.join(" "), "error");
-			return;
-		}
-		const level = await runSelect(
-			ctx,
-			"Preview exact routed request",
-			(Object.entries(analysis.routes) as Array<[ThinkingLevel, ModelProfile]>).map(([thinkingLevel, profile]) => ({
-				value: thinkingLevel,
-				label: thinkingLevel,
-				description: `${profile.slug} · ${profileDescription(profile, serverType, routing)}`,
-			})),
-			[`adaptive model: ${profileModelId(config.id, routing.aliasSlug)} → ${config.id}`],
-		);
-		if (!level) return;
-		const profile = analysis.routes[level as ThinkingLevel];
-		const payload = applyThinkingProfileRoute(
-			{ model: config.id },
-			profile,
-			repetitionPenaltyKeyForServer(serverType),
-		);
-		await runTextView(ctx, `${level} → ${profile.slug}`, [
-			`Adaptive model: ${profileModelId(config.id, routing.aliasSlug)}`,
-			`Base model: ${config.id}`,
-			"",
-			...JSON.stringify(payload, null, 2).split("\n"),
-		]);
-	}
+
 
 	type RoutingEditorResult = { action: "save"; routing: ModelProfileRouting } | { action: "remove" } | null;
 
-	async function showProfileRoutingEditor(
-		ctx: ExtensionCommandContext,
-		provider: DiscoveredProvider,
-		config: ModelConfig,
-		allConfigs: ModelConfig[],
-		profiles: readonly ModelProfile[],
-		serverType: string,
-	): Promise<RoutingEditorResult> {
-		if (profiles.length === 0) {
-			ctx.ui.notify("Create at least one preset before configuring adaptive routing.", "warning");
-			return null;
-		}
-		const existing = app.profileRouting(provider, config.id);
-		const routing: ModelProfileRouting = existing
-			? { ...existing, levels: { ...existing.levels } }
-			: defaultProfileRouting(profiles);
 
-		for (;;) {
-			const analysis = analyzeExplicitProfileRouting(routing, profiles);
-			const items: SelectItem[] = [
-				{
-					value: "enabled",
-					label: "Adaptive routing",
-					description: routing.enabled ? "enabled" : "disabled (mapping retained)",
-				},
-				{
-					value: "alias",
-					label: "Adaptive model alias",
-					description: profileModelId(config.id, routing.aliasSlug),
-				},
-				{
-					value: "conventional",
-					label: "Map four-preset layout",
-					description: "choose off, low, medium, and xhigh once; expand to all seven Pi levels",
-				},
-				...THINKING_LEVELS.map((level) => ({
-					value: `level:${level}`,
-					label: `Pi ${level}`,
-					description: `→ ${routing.levels[level] || "not selected"}`,
-				})),
-				{ value: "preview", label: "Preview exact requests", description: "Inspect the payload preset for each Pi level" },
-				{ value: "save", label: "Review and save", description: analysis.errors.length ? `${analysis.errors.length} issue(s)` : "Valid mapping" },
-			];
-			if (existing) items.push({ value: "remove", label: "Remove adaptive routing", description: "Fixed presets remain unchanged · requires confirmation" });
-			items.push({ value: "cancel", label: "Cancel" });
 
-			const action = await runSelect(ctx, "Adaptive Shift-Tab routing", items, [
-				"Explicit router: only this alias changes complete presets when Shift-Tab is pressed.",
-				...(analysis.errors.length ? analysis.errors.map((error) => `⚠ ${error}`) : profileRoutingHeader(routing, profiles)),
-			]);
-			if (!action || action === "cancel") return null;
-			if (action === "enabled") {
-				routing.enabled = !routing.enabled;
-			} else if (action === "alias") {
-				const alias = await promptProfileSlug(ctx, routing.aliasSlug);
-				if (alias) routing.aliasSlug = alias;
-			} else if (action === "conventional") {
-				const selected: Partial<Record<"off" | "low" | "medium" | "xhigh", string>> = {};
-				let cancelled = false;
-				for (const kind of ["off", "low", "medium", "xhigh"] as const) {
-					const slug = await choosePreset(ctx, `${kind} preset`, profiles, serverType, routing.levels[kind]);
-					if (!slug) {
-						cancelled = true;
-						break;
-					}
-					selected[kind] = slug;
-				}
-				if (!cancelled && selected.off && selected.low && selected.medium && selected.xhigh) {
-					routing.levels = {
-						off: selected.off,
-						minimal: selected.low,
-						low: selected.low,
-						medium: selected.medium,
-						high: selected.xhigh,
-						xhigh: selected.xhigh,
-						max: selected.xhigh,
-					};
-				}
-			} else if (action.startsWith("level:")) {
-				const level = action.slice("level:".length) as ThinkingLevel;
-				const slug = await choosePreset(ctx, `Preset for Pi ${level}`, profiles, serverType, routing.levels[level]);
-				if (slug) routing.levels[level] = slug;
-			} else if (action === "preview") {
-				await previewProfileRouting(ctx, config, routing, profiles, serverType);
-			} else if (action === "save") {
-				if (analysis.errors.length > 0) {
-					ctx.ui.notify(analysis.errors.join(" "), "error");
-					continue;
-				}
-				const aliasId = profileModelId(config.id, routing.aliasSlug);
-				if (allConfigs.some((model) => model.id === aliasId)) {
-					ctx.ui.notify(`Adaptive alias "${aliasId}" collides with a server model.`, "error");
-					continue;
-				}
-				const confirmed = await ctx.ui.confirm(
-					"Save adaptive routing",
-					`${routing.enabled ? "Enable" : "Save disabled"} "${aliasId}" with all seven Pi levels mapped? The base model and fixed aliases will not change.`,
-				);
-				if (confirmed) return { action: "save", routing };
-			} else if (action === "remove") {
-				const confirmed = await ctx.ui.confirm(
-					"Remove adaptive routing",
-					`Remove "${profileModelId(config.id, routing.aliasSlug)}"? Presets and fixed aliases remain.`,
-				);
-				if (confirmed) return { action: "remove" };
-			}
-		}
-	}
 
-	async function showProfilesScreen(
-		ctx: ExtensionCommandContext,
-		provider: DiscoveredProvider,
-		config: ModelConfig,
-		allConfigs: ModelConfig[],
-		prefetched: { models: Record<string, unknown>[]; serverType: string },
-	): Promise<void> {
-		for (;;) {
-			const profiles = app.profiles(provider, config.id);
-			const routing = app.profileRouting(provider, config.id);
-			const routeAnalysis = routing ? analyzeExplicitProfileRouting(routing, profiles) : undefined;
-			const items: SelectItem[] = [
-				{
-					value: "routing",
-					label: "Configure adaptive routing",
-					description: !routing
-						? "explicitly map all seven Pi levels to complete presets"
-						: routeAnalysis?.errors.length
-							? `invalid · ${routeAnalysis.errors.length} issue(s)`
-							: routing.enabled
-								? `enabled as ${profileModelId(config.id, routing.aliasSlug)}`
-								: "disabled; mapping retained",
-				},
-			];
-			if (routing && routeAnalysis?.routes) {
-				items.push({
-					value: "preview-routing",
-					label: "Preview routed requests",
-					description: "inspect exact thinking and sampling fields for every Pi level",
-				});
-			}
-			items.push(
-				{ value: "add", label: "Create preset", description: "Create a complete thinking/sampling parameter bundle" },
-				{ value: "clone", label: "Clone preset", description: "Copy an existing preset, then edit only what differs" },
-			);
-			for (const profile of profiles) {
-				items.push({
-					value: `profile:${profile.slug}`,
-					label: profile.slug,
-					description: profileDescription(profile, prefetched.serverType, routing),
-				});
-			}
-			items.push({ value: "back", label: "Back" });
-
-			const action = await runSelect(ctx, `Thinking & presets: ${config.id}`, items, [
-				`${profiles.length} preset(s) · base model behavior is never changed by presets`,
-				...profileRoutingHeader(routing, profiles),
-			]);
-			if (!action || action === "back") return;
-
-			if (action === "routing") {
-				const previousAlias = routing?.aliasSlug;
-				const result = await showProfileRoutingEditor(
-					ctx,
-					provider,
-					config,
-					allConfigs,
-					profiles,
-					prefetched.serverType,
-				);
-				if (!result) continue;
-				if (result.action === "save") app.saveRouting(provider, config.id, result.routing);
-				else app.removeRouting(provider, config.id);
-				const registered = await persistProfileChange(ctx, provider, prefetched);
-				if (registered) {
-					const nextAlias = result.action === "save" && result.routing.enabled ? result.routing.aliasSlug : undefined;
-					if (previousAlias) {
-						await refreshSelectedProfile(
-							ctx,
-							provider.name,
-							profileModelId(config.id, previousAlias),
-							nextAlias ? profileModelId(config.id, nextAlias) : config.id,
-						);
-					}
-					updateThinkingProfileStatus(ctx);
-					ctx.ui.notify(result.action === "save" ? "Adaptive routing saved." : "Adaptive routing removed.", "info");
-				}
-				continue;
-			}
-			if (action === "preview-routing" && routing) {
-				await previewProfileRouting(ctx, config, routing, profiles, prefetched.serverType);
-				continue;
-			}
-
-			let existing = action.startsWith("profile:")
-				? profiles.find((profile) => profile.slug === action.slice("profile:".length))
-				: undefined;
-			let template: ModelProfile | undefined;
-			if (action === "clone") {
-				const sourceSlug = await choosePreset(ctx, "Clone which preset?", profiles, prefetched.serverType);
-				const source = profiles.find((profile) => profile.slug === sourceSlug);
-				if (!source) continue;
-				const slug = await promptProfileSlug(ctx, `${source.slug}-copy`);
-				if (!slug) continue;
-				template = {
-					...source,
-					slug,
-					...(source.chatTemplateKwargs ? { chatTemplateKwargs: { ...source.chatTemplateKwargs } } : {}),
-					...(source.sampling ? { sampling: { ...source.sampling } } : {}),
-				};
-			}
-			if (action !== "add" && action !== "clone" && !existing) continue;
-
-			const result = await showProfileEditor(
-				ctx,
-				provider,
-				config,
-				allConfigs,
-				prefetched.serverType,
-				existing,
-				template,
-			);
-			if (!result) continue;
-			if (result.action === "save") {
-				const currentRouting = app.profileRouting(provider, config.id);
-				const nextRouting = currentRouting
-					? { ...currentRouting, levels: { ...currentRouting.levels } }
-					: undefined;
-				const prospectiveProfiles = profilesWithCandidate(provider, config.id, result.profile, existing?.slug);
-				const wasValid = currentRouting
-					? analyzeExplicitProfileRouting(currentRouting, profiles).errors.length === 0
-					: false;
-				if (nextRouting && existing && existing.slug !== result.profile.slug) {
-					nextRouting.levels = Object.fromEntries(
-						Object.entries(nextRouting.levels).map(([level, slug]) => [
-							level,
-							slug === existing.slug ? result.profile.slug : slug,
-						]),
-					) as Record<ThinkingLevel, string>;
-				}
-				const willBeValid = nextRouting
-					? analyzeExplicitProfileRouting(nextRouting, prospectiveProfiles).errors.length === 0
-					: false;
-				if (nextRouting?.enabled && wasValid && !willBeValid) {
-					const confirmed = await ctx.ui.confirm(
-						"Routing will become invalid",
-						"Save this preset anyway? The adaptive alias will not be registered until the mapping is repaired.",
-					);
-					if (!confirmed) continue;
-				}
-				app.saveProfile(provider, config.id, result.profile, existing?.slug);
-				if (nextRouting) app.saveRouting(provider, config.id, nextRouting);
-				const registered = await persistProfileChange(ctx, provider, prefetched);
-				if (registered) {
-					if (existing && existing.exposeAsModel !== false) {
-						await refreshSelectedProfile(
-							ctx,
-							provider.name,
-							profileModelId(config.id, existing.slug),
-							result.profile.exposeAsModel === false
-								? config.id
-								: profileModelId(config.id, result.profile.slug),
-						);
-					}
-					await refreshAdaptiveSelection(ctx, provider, config.id);
-					updateThinkingProfileStatus(ctx);
-					ctx.ui.notify(`${existing ? "Updated" : "Created"} preset "${result.profile.slug}".`, "info");
-				}
-			} else if (existing) {
-				app.removeProfile(provider, config.id, existing.slug);
-				const registered = await persistProfileChange(ctx, provider, prefetched);
-				if (registered) {
-					await refreshSelectedProfile(
-						ctx,
-						provider.name,
-						profileModelId(config.id, existing.slug),
-						config.id,
-					);
-					await refreshAdaptiveSelection(ctx, provider, config.id);
-					updateThinkingProfileStatus(ctx);
-					ctx.ui.notify(`Deleted preset "${existing.slug}".`, "info");
-				}
-			}
-		}
-	}
 
 	// -----------------------------------------------------------------------
 	// Screen: model detail / edit
 	// -----------------------------------------------------------------------
 
-	async function showModelScreen(
-		ctx: ExtensionCommandContext,
-		provider: DiscoveredProvider,
-		config: ModelConfig,
-		allConfigs: ModelConfig[],
-		prefetched: { models: Record<string, unknown>[]; serverType: string },
-	): Promise<void> {
-		for (;;) {
-			const ov = provider.modelOverrides?.[config.id] ?? {};
-			const effCtx = ov.contextWindow ?? config.contextWindow ?? provider.defaultContextWindow ?? null;
-			const effMax = ov.maxTokens ?? config.maxTokens ?? provider.defaultMaxTokens ?? null;
-			const effReasoning = ov.reasoning ?? config.reasoning;
-			const effInput = ov.input ?? config.input ?? ["text"];
 
-			const header = [
-				`server reports: ctx ${fmt(config.contextWindow)} · max ${fmt(config.maxTokens)} · reasoning ${
-					config.reasoning === null ? "unknown" : config.reasoning
-				} (${config.source})`,
-				`effective:      ctx ${fmt(effCtx)} · max ${fmt(effMax)} · reasoning ${
-					effReasoning === null ? "unknown" : effReasoning
-				} · input ${effInput.join("+")}`,
-			];
-
-			const configuredProfiles = app.profiles(provider, config.id);
-			const configuredRouting = app.profileRouting(provider, config.id);
-			const routingAnalysis = configuredRouting
-				? analyzeExplicitProfileRouting(configuredRouting, configuredProfiles)
-				: undefined;
-			const routingStatus = !configuredRouting
-				? "not configured"
-				: routingAnalysis?.errors.length
-					? `invalid (${routingAnalysis.errors.length} issue(s))`
-					: configuredRouting.enabled
-						? `enabled as @${configuredRouting.aliasSlug}`
-						: "disabled";
-			const items: SelectItem[] = [
-				{ value: "ctx", label: "Set context window", description: `current: ${fmt(effCtx)}` },
-				{ value: "max", label: "Set max output tokens", description: `current: ${fmt(effMax)}` },
-				{
-					value: "reasoning",
-					label: "Toggle reasoning",
-					description: `current: ${effReasoning === null ? "unknown" : effReasoning ? "on" : "off"}`,
-				},
-				{
-					value: "input",
-					label: "Toggle vision (image input)",
-					description: `current: ${effInput.includes("image") ? "vision on" : "text only"}`,
-				},
-				{
-					value: "profiles",
-					label: "Thinking & presets",
-					description: `${configuredProfiles.length} preset(s) · adaptive routing ${routingStatus}`,
-				},
-			];
-			if (Object.keys(ov).length > 0) {
-				items.push({ value: "clear", label: "Clear overrides", description: "revert to server-reported values" });
-			}
-			items.push({ value: "back", label: "Back" });
-
-			const action = await runSelect(ctx, `Model: ${config.id}${modelFlags(config, ov)}`, items, header);
-			if (!action || action === "back") return;
-
-			if (action === "profiles") {
-				await showProfilesScreen(ctx, provider, config, allConfigs, prefetched);
-				continue;
-			}
-
-			let feedback: string | undefined;
-			if (action === "ctx") {
-				const n = await askNumber(ctx, `Context window for ${config.id}`, String(effCtx ?? 128000));
-				if (n === undefined) continue;
-				provider.modelOverrides = { ...provider.modelOverrides, [config.id]: { ...ov, contextWindow: n } };
-				feedback = `Context window saved as ${fmt(n)}.`;
-			} else if (action === "max") {
-				const n = await askNumber(ctx, `Max output tokens for ${config.id}`, String(effMax ?? 16384));
-				if (n === undefined) continue;
-				provider.modelOverrides = { ...provider.modelOverrides, [config.id]: { ...ov, maxTokens: n } };
-				feedback = `Max output tokens saved as ${fmt(n)}.`;
-			} else if (action === "reasoning") {
-				const reasoning = !(effReasoning ?? false);
-				provider.modelOverrides = {
-					...provider.modelOverrides,
-					[config.id]: { ...ov, reasoning },
-				};
-				feedback = `Reasoning ${reasoning ? "enabled" : "disabled"}.`;
-			} else if (action === "input") {
-				// Toggle vision: add/remove "image" from input modalities
-				const hasVision = effInput.includes("image");
-				const newInput = hasVision
-					? ["text"]
-					: [...new Set([...effInput, "image"])]; // ensure both text and image
-				provider.modelOverrides = {
-					...provider.modelOverrides,
-					[config.id]: { ...ov, input: newInput },
-				};
-				feedback = `Vision input ${hasVision ? "disabled" : "enabled"}.`;
-			} else if (action === "clear") {
-				if (provider.modelOverrides) {
-					delete provider.modelOverrides[config.id];
-					if (Object.keys(provider.modelOverrides).length === 0) provider.modelOverrides = undefined;
-				}
-				feedback = "Model overrides cleared.";
-			}
-			if (!feedback) continue;
-
-			// Persist + re-register with new values.
-			app.saveSource(provider);
-			try {
-				await registerProvider(provider, prefetched);
-				ctx.ui.notify(feedback, "info");
-			} catch (error) {
-				ctx.ui.notify(`${feedback} Provider registration remains on its previous state: ${errorMessage(error)}`, "warning");
-			}
-		}
-	}
 
 	// -----------------------------------------------------------------------
 	// Screen: endpoint detail
 	// -----------------------------------------------------------------------
 
-	async function showEndpointScreen(ctx: ExtensionCommandContext, provider: DiscoveredProvider): Promise<void> {
-		// Fetch live data
-		let live = await runLoader(
-			ctx,
-			`Scanning ${provider.baseUrl}...`,
-			(signal) => fetchModels(provider.baseUrl, provider.apiKey, signal),
-			(error) => recordFailedScan(provider, error),
-		);
-		if (live && live.models.length === 0) {
-			const error = new Error("Endpoint reported no models; retaining the last known-good catalogue.");
-			recordFailedScan(provider, error);
-			ctx.ui.notify(error.message, "warning");
-			live = null;
-		} else if (live) {
-			recordSuccessfulScan(provider, live.models, live.serverType);
-		}
 
-		for (;;) {
-			const header: string[] = [];
-			const cachedModels = provider.cachedModels ?? [];
-			let configs: ModelConfig[] = [];
-			if (live) {
-				configs = live.models.map(extractModelConfig);
-				header.push(`${live.serverType} · ${provider.baseUrl} · online · ${configs.length} model(s)`);
-			} else {
-				configs = cachedModels.map(extractModelConfig);
-				header.push(
-					`${provider.serverType ?? "?"} · ${provider.baseUrl} · OFFLINE · ${configs.length} cached model(s)`,
-				);
-			}
-			header.push(`authentication: ${provider.apiKey ? "API key configured" : "anonymous"}`);
-			if (provider.lastScanned) {
-				header.push(`last successful scan: ${new Date(provider.lastScanned).toLocaleString()}`);
-			}
-			if (!live && provider.lastScanError) {
-				header.push(`latest live scan failed: ${redactSecret(provider.lastScanError, provider.apiKey)}`);
-				header.push("Last known-good models and all saved presets remain available.");
-			}
-
-			const items: SelectItem[] = configs.map((c) => ({
-				value: `model:${c.id}`,
-				label: `${c.id}${modelFlags(c, provider.modelOverrides?.[c.id])}`,
-				description: modelDescription(c, provider),
-			}));
-			items.push({ value: "rescan", label: "Re-scan source", description: "Fetch a fresh model list and re-register" });
-			items.push({
-				value: "rename",
-				label: "Rename source",
-				description: `Current: ${provider.name}`,
-			});
-			items.push({
-				value: "auth",
-				label: "Authentication",
-				description: provider.apiKey ? "API key configured · replace or clear" : "Anonymous · add an API key",
-			});
-			items.push({
-				value: "defaults",
-				label: "Fallback defaults",
-				description: `Used when the server reports nothing · ctx ${fmt(provider.defaultContextWindow ?? null)} · max ${fmt(provider.defaultMaxTokens ?? null)}`,
-			});
-			items.push({ value: "remove", label: "Remove source", description: "Unregister the provider and delete its saved configuration" });
-			items.push({ value: "back", label: "Back" });
-
-			const action = await runSelect(ctx, `Source: ${provider.name}`, items, header);
-			if (!action || action === "back") return;
-
-			if (action.startsWith("model:")) {
-				const id = action.slice("model:".length);
-				const config = configs.find((c) => c.id === id);
-				const catalog = live ?? {
-					models: cachedModels,
-					serverType: provider.serverType ?? "OpenAI-compatible",
-				};
-				if (config) await showModelScreen(ctx, provider, config, configs, catalog);
-			} else if (action === "rescan") {
-				live = await runLoader(
-					ctx,
-					`Scanning ${provider.baseUrl}...`,
-					(signal) => fetchModels(provider.baseUrl, provider.apiKey, signal),
-					(error) => recordFailedScan(provider, error),
-				);
-				if (live) {
-					try {
-						const registered = await registerProvider(provider, live);
-						recordSuccessfulScan(provider, live.models, live.serverType, false);
-						app.saveSource(provider);
-						ctx.ui.notify(
-							`Re-registered ${live.models.length} base model(s)${
-								registered.profileCount ? ` + ${registered.profileCount} profile(s)` : ""
-							} from ${live.serverType}.`,
-							"info",
-						);
-					} catch (err) {
-						recordFailedScan(provider, err);
-						live = null;
-						ctx.ui.notify(errorMessage(err), "error");
-					}
-				}
-			} else if (action === "rename") {
-				const enteredName = await runInput(
-					ctx,
-					"New source name",
-					provider.name,
-					"This name identifies the provider and its models in /model.",
-					(value) => {
-						const name = value.trim();
-						if (!name) return "Source name cannot be blank.";
-						if (app.listSources().some((candidate) => candidate.name === name && candidate.name !== provider.name)) {
-							return `Source "${name}" already exists.`;
-						}
-						return null;
-					},
-				);
-				const newName = enteredName?.trim();
-				if (newName && newName !== provider.name) {
-					const renamed = app.renameSource(provider, newName);
-					if (!renamed.ok) {
-						ctx.ui.notify(`Cannot rename — "${newName}" already exists or "${renamed.oldName}" was not found.`, "error");
-					} else {
-						const catalog = live ??
-							(provider.cachedModels?.length
-								? {
-									models: provider.cachedModels,
-									serverType: provider.serverType ?? "OpenAI-compatible",
-								}
-								: undefined);
-						try {
-							await registerProvider(provider, catalog);
-							pi.unregisterProvider(renamed.oldName);
-							app.saveSource(provider);
-							ctx.ui.notify(`Renamed to "${newName}"${live ? "" : " using the cached catalogue"}.`, "info");
-						} catch (error) {
-							app.renameSource(provider, renamed.oldName);
-							ctx.ui.notify(`Rename rolled back: ${errorMessage(error)}`, "error");
-						}
-					}
-				}
-			} else if (action === "auth") {
-				const authAction = await runSelect(
-					ctx,
-					"Provider authentication",
-					[
-						{
-							value: "set",
-							label: provider.apiKey ? "Replace API key" : "Set API key",
-							description: "masked while typing · used for discovery and inference",
-						},
-						...(provider.apiKey
-							? [{ value: "clear", label: "Clear API key", description: "remove the saved bearer credential" }]
-							: []),
-						{ value: "back", label: "Back" },
-					],
-					[provider.baseUrl, `Current: ${provider.apiKey ? "API key configured" : "anonymous"}`],
-				);
-				if (!authAction || authAction === "back") continue;
-
-				let nextApiKey: string | undefined;
-				if (authAction === "set") {
-					const entered = await askSecret(ctx, "API key", "Paste or type the replacement key. It will not be displayed.");
-					if (entered === undefined) continue;
-					nextApiKey = entered.trim();
-					if (!nextApiKey) {
-						ctx.ui.notify("API key cannot be blank. Use Clear API key for anonymous access.", "warning");
-						continue;
-					}
-				} else {
-					const confirmed = await ctx.ui.confirm(
-						"Clear API key",
-						"Remove the saved bearer credential from this provider?",
-					);
-					if (!confirmed) continue;
-				}
-
-				app.setCredential(provider, nextApiKey);
-				const checked = await runLoader(
-					ctx,
-					`Validating ${provider.name} authentication...`,
-					(signal) => fetchModels(provider.baseUrl, provider.apiKey, signal),
-					(error) => recordFailedScan(provider, error),
-				);
-				if (checked?.models.length) {
-					try {
-						await registerProvider(provider, checked);
-						recordSuccessfulScan(provider, checked.models, checked.serverType, false);
-						app.saveSource(provider);
-						live = checked;
-						ctx.ui.notify(`Authentication saved and validated for ${provider.name}.`, "info");
-					} catch (error) {
-						recordFailedScan(provider, error);
-						live = null;
-						ctx.ui.notify(`Authentication saved, but registration failed: ${errorMessage(error)}`, "warning");
-					}
-				} else {
-					if (checked) {
-						const error = new Error("Endpoint reported no models while validating authentication.");
-						recordFailedScan(provider, error);
-						ctx.ui.notify(error.message, "warning");
-					}
-					live = null;
-					if (provider.cachedModels?.length) {
-						try {
-							await registerProvider(provider, {
-								models: provider.cachedModels,
-								serverType: provider.serverType ?? "OpenAI-compatible",
-							});
-						} catch (error) {
-							ctx.ui.notify(`Authentication was saved, but cached registration failed: ${errorMessage(error)}`, "warning");
-						}
-					}
-					ctx.ui.notify("Authentication saved but could not be validated; the last known-good catalogue was retained.", "warning");
-				}
-			} else if (action === "defaults") {
-				const changed: string[] = [];
-				const cw = await askNumber(ctx, "Default context window (blank = keep)", String(provider.defaultContextWindow ?? 128000));
-				if (cw !== undefined) {
-					provider.defaultContextWindow = cw;
-					changed.push(`context ${fmt(cw)}`);
-				}
-				const mt = await askNumber(ctx, "Default max output tokens (blank = keep)", String(provider.defaultMaxTokens ?? 16384));
-				if (mt !== undefined) {
-					provider.defaultMaxTokens = mt;
-					changed.push(`max output ${fmt(mt)}`);
-				}
-				if (!changed.length) continue;
-				app.saveSource(provider);
-				const catalog = live ??
-					(provider.cachedModels?.length
-						? {
-							models: provider.cachedModels,
-							serverType: provider.serverType ?? "OpenAI-compatible",
-						}
-						: undefined);
-				try {
-					await registerProvider(provider, catalog);
-					ctx.ui.notify(`Fallback defaults saved: ${changed.join(" · ")}.`, "info");
-				} catch (error) {
-					ctx.ui.notify(`Defaults saved; provider remains on its last registered catalogue: ${errorMessage(error)}`, "warning");
-				}
-			} else if (action === "remove") {
-				const sure = await ctx.ui.confirm(
-					"Remove source",
-					`Unregister "${provider.name}" and delete its saved configuration, cached catalogue, presets, and routing?`,
-				);
-				if (sure) {
-					pi.unregisterProvider(provider.name);
-					app.removeSource(provider.name);
-					ctx.ui.notify(`Removed "${provider.name}".`, "info");
-					return;
-				}
-			}
-		}
-	}
 
 	// -----------------------------------------------------------------------
 	// Screen: add endpoint
 	// -----------------------------------------------------------------------
 
-	async function showAddScreen(ctx: ExtensionCommandContext, presetUrl?: string, presetName?: string): Promise<void> {
-		const enteredUrl = presetUrl ?? await runInput(
-			ctx,
-			"Endpoint URL",
-			"http://192.168.1.100:8080",
-			"Enter the base URL of an OpenAI-compatible model server.",
-			(value) => {
-				if (!value.trim()) return "Endpoint URL cannot be blank.";
-				if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value.trim()) && !/^https?:\/\//i.test(value.trim())) {
-					return "Endpoint URL must use HTTP or HTTPS.";
-				}
-				try {
-					new URL(normalizeEndpointUrl(value));
-					return null;
-				} catch {
-					return "Enter a valid HTTP or HTTPS endpoint URL.";
-				}
-			},
-		);
-		if (!enteredUrl) return;
-		let baseUrl: string;
-		try {
-			baseUrl = normalizeEndpointUrl(enteredUrl);
-		} catch (error) {
-			ctx.ui.notify(errorMessage(error), "error");
-			return;
-		}
 
-		const authMode = await runSelect(
-			ctx,
-			"Endpoint authentication",
-			[
-				{ value: "none", label: "No API key", description: "Connect without a configured bearer credential" },
-				{
-					value: "api-key",
-					label: "Enter API key",
-					description: "Masked while typing · saved only in the private model-discovery configuration",
-				},
-				{ value: "cancel", label: "Cancel" },
-			],
-			[baseUrl, "The key is sent as an Authorization: Bearer header for discovery and inference."],
-		);
-		if (!authMode || authMode === "cancel") return;
-
-		let apiKey: string | undefined;
-		if (authMode === "api-key") {
-			const entered = await askSecret(ctx, "API key", "Paste or type the provider key. It will not be displayed.");
-			if (entered === undefined) return;
-			apiKey = entered.trim();
-			if (!apiKey) {
-				ctx.ui.notify("API key cannot be blank. Choose No API key for anonymous access.", "warning");
-				return;
-			}
-		}
-
-		let live: { models: Record<string, unknown>[]; serverType: string } | null = null;
-		for (;;) {
-			live = await runLoader(ctx, `Probing ${baseUrl}${apiKey ? " with API key" : ""}...`, (signal) =>
-				fetchModels(baseUrl, apiKey, signal),
-			);
-			if (live) break;
-			const retry = await ctx.ui.confirm(
-				"Provider probe failed",
-				apiKey ? "Enter a replacement API key and retry?" : "Enter an API key and retry?",
-			);
-			if (!retry) return;
-			const entered = await askSecret(ctx, "API key", "Paste or type the provider key. It will not be displayed.");
-			if (entered === undefined) return;
-			apiKey = entered.trim();
-			if (!apiKey) {
-				ctx.ui.notify("API key cannot be blank.", "warning");
-				return;
-			}
-		}
-
-		if (live.models.length === 0) {
-			ctx.ui.notify("Endpoint is online but reports no models.", "warning");
-			return;
-		}
-
-		const suggestedName = presetName?.trim() || generateProviderName(baseUrl);
-		const enteredName = await runInput(
-			ctx,
-			"Source name",
-			suggestedName,
-			"This name identifies the provider and its models in /model.",
-			(value) => {
-				const name = value.trim();
-				if (!name) return "Source name cannot be blank.";
-				if (app.findSource(name)) return `Source "${name}" already exists. Open it from the home screen instead.`;
-				return null;
-			},
-		);
-		if (enteredName === undefined) return;
-		const name = enteredName.trim();
-
-		const provider: DiscoveredProvider = { name, baseUrl, apiKey };
-		const configs = live.models.map(extractModelConfig);
-
-		// Review screen: show exactly what the server reports
-		const header = [
-			`${live.serverType} · ${baseUrl} · online · ${configs.length} model(s)`,
-			`authentication: ${apiKey ? "API key configured" : "anonymous"}`,
-		];
-		const missing = configs.filter((c) => c.contextWindow === null || c.maxTokens === null || c.reasoning === null);
-		if (missing.length > 0) {
-			header.push(`${missing.length} model(s) have values the server didn't report (shown as ?)`);
-		}
-
-		for (;;) {
-			const items: SelectItem[] = configs.map((c) => ({
-				value: `model:${c.id}`,
-				label: `${c.id}${modelFlags(c, provider.modelOverrides?.[c.id])}`,
-				description: modelDescription(c, provider),
-			}));
-			items.push({ value: "register", label: "Register source", description: `Save as "${name}" and make models available in /model` });
-			items.push({ value: "cancel", label: "Cancel" });
-
-			const action = await runSelect(ctx, `Review: ${name}`, items, header);
-			if (!action || action === "cancel") {
-				ctx.ui.notify("Discovery cancelled.", "info");
-				return;
-			}
-
-			if (action.startsWith("model:")) {
-				const id = action.slice("model:".length);
-				const config = configs.find((c) => c.id === id);
-				if (config) {
-					// During add flow, edit without registering yet
-					const ov = provider.modelOverrides?.[config.id] ?? {};
-					const effCtx = ov.contextWindow ?? config.contextWindow;
-					const effMax = ov.maxTokens ?? config.maxTokens;
-					const cw = await askNumber(ctx, `Context window for ${config.id} (blank = keep)`, String(effCtx ?? 128000));
-					if (cw !== undefined) provider.modelOverrides = { ...provider.modelOverrides, [config.id]: { ...ov, contextWindow: cw } };
-					const updated = provider.modelOverrides?.[config.id] ?? ov;
-					const mt = await askNumber(ctx, `Max output tokens for ${config.id} (blank = keep)`, String(effMax ?? 16384));
-					if (mt !== undefined) provider.modelOverrides = { ...provider.modelOverrides, [config.id]: { ...updated, maxTokens: mt } };
-				}
-				continue;
-			}
-
-			if (action === "register") {
-				// If values are still missing, ask for provider-wide fallbacks
-				const stillMissingCtx = configs.some(
-					(c) => (provider.modelOverrides?.[c.id]?.contextWindow ?? c.contextWindow) === null,
-				);
-				const stillMissingMax = configs.some(
-					(c) => (provider.modelOverrides?.[c.id]?.maxTokens ?? c.maxTokens) === null,
-				);
-				if (stillMissingCtx) {
-					provider.defaultContextWindow = await askNumber(ctx, "Fallback context window for unreported models", "128000");
-				}
-				if (stillMissingMax) {
-					provider.defaultMaxTokens = await askNumber(ctx, "Fallback max output tokens for unreported models", "16384");
-				}
-
-				try {
-					await registerProvider(provider, live);
-					recordSuccessfulScan(provider, live.models, live.serverType, false);
-					app.saveSource(provider);
-					ctx.ui.notify(
-						`Registered ${configs.length} model(s) from ${live.serverType} as "${name}". Use /model to select.`,
-						"info",
-					);
-				} catch (err) {
-					ctx.ui.notify(`Failed to register: ${err instanceof Error ? err.message : String(err)}`, "error");
-				}
-				return;
-			}
-		}
-	}
 
 	// -----------------------------------------------------------------------
 	// Screen: main menu
@@ -1917,30 +746,7 @@ export default async function (pi: ExtensionAPI) {
 	 * afterwards — never a nested overlay (UX-STANDARD: one surface at a time).
 	 * Replaced by panel-native screens in slices 1b-3.
 	 */
-	async function runLegacyBrowseTree(ctx: ExtensionCommandContext): Promise<void> {
-		for (;;) {
-			const providers = app.listSources();
-			const action = await runSelect(
-				ctx,
-				"Model Discovery",
-				buildHomeItems(providers),
-				buildHomeSummary(providers),
-			);
-			if (!action || action === "quit") return;
 
-			if (action === "add") {
-				await showAddScreen(ctx);
-			} else if (action === "diagnostics") {
-				await runTextView(ctx, "Model Discovery diagnostics", buildDiagnosticsLines(app.listSources()));
-			} else if (action === "rescan-all") {
-				await runRescanAll(ctx);
-			} else if (action.startsWith("provider:")) {
-				const name = action.slice("provider:".length);
-				const provider = app.findSource(name);
-				if (provider) await showEndpointScreen(ctx, provider);
-			}
-		}
-	}
 
 	/**
 	 * Home dashboard (slice 1a, PLAN §5): the vendored canonical SettingsPanel
@@ -1948,25 +754,1257 @@ export default async function (pi: ExtensionAPI) {
 	 * width). Keys route close -> run -> reopen with the last key selected;
 	 * esc/q close. TRANSITIONAL keys run the old wizard flow, then reopen.
 	 */
+
+
+	// ---------------------------------------------------------------------------
+	// Panel hosts (slice 1b, D1): vendored SettingsPanel screens that replace the
+	// wizard flows. One surface at a time: activate({kind:"close"}) -> run ->
+	// reopen; arms live in host state; apply() validates and writes through the
+	// SAME app methods the wizard used. Dropped vs wizard: per-level routing
+	// request preview (diagnostic; the payloads remain inspectable via /discover).
+	// ---------------------------------------------------------------------------
+
+	function positiveInt(raw: string): number | null {
+		const normalized = raw.trim().replace(/[,._\s]/g, "");
+		if (!/^\d+$/.test(normalized)) return null;
+		const n = Number(normalized);
+		return n > 0 ? n : null;
+	}
+
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	type PanelDeps = { theme: any; keybindings: any; requestRender: () => void; done: (result: PanelResult) => void };
+
+	async function runPanel(
+		ctx: ExtensionCommandContext,
+		build: (deps: PanelDeps) => SettingsPanel,
+	): Promise<PanelResult | undefined> {
+		return await ctx.ui.custom<PanelResult | undefined>((tui, theme, keybindings, done) =>
+			build({ theme, keybindings, requestRender: () => tui.requestRender(), done }),
+		);
+	}
+
+	function askSecretPanel(ctx: ExtensionCommandContext, prompt: string): Promise<string | undefined> {
+		return ctx.ui.custom<string | undefined>(
+			(tui, theme, keybindings, done) =>
+				new SecretField({
+					theme,
+					keybindings,
+					prompt,
+					requestRender: () => tui.requestRender(),
+					done,
+				}),
+			{
+				overlay: true,
+				overlayOptions: { anchor: "center", width: 72, minWidth: 36, maxHeight: "90%", margin: 1 },
+			},
+		);
+	}
+
+	function cachedCatalog(provider: DiscoveredProvider): { models: Record<string, unknown>[]; serverType: string } | undefined {
+		return provider.cachedModels?.length
+			? { models: provider.cachedModels, serverType: provider.serverType ?? "OpenAI-compatible" }
+			: undefined;
+	}
+
+	function endpointPanelInput(
+		provider: DiscoveredProvider,
+		live: { models: Record<string, unknown>[]; serverType: string } | null,
+		page: number,
+		armed: readonly string[],
+	) {
+		const configs = (live?.models ?? provider.cachedModels ?? []).map(extractModelConfig);
+		return {
+			version: modelDiscoveryVersion(),
+			source: {
+				name: provider.name,
+				baseUrl: provider.baseUrl,
+				serverType: provider.serverType ?? live?.serverType ?? "?",
+				online: live !== null,
+				modelCount: live?.models.length ?? provider.cachedModels?.length ?? 0,
+				cachedCount: provider.cachedModels?.length ?? 0,
+				hasApiKey: Boolean(provider.apiKey),
+				defaultContextWindow: provider.defaultContextWindow ?? null,
+				defaultMaxTokens: provider.defaultMaxTokens ?? null,
+				lastScanned: provider.lastScanned,
+				lastScanError: provider.lastScanError ? redactSecret(provider.lastScanError, provider.apiKey) : undefined,
+			},
+			models: configs.map((c): { id: string; flags: string; summary: string; presetCount: number; routingSummary: string } => ({
+				id: c.id,
+				flags: modelFlags(c, provider.modelOverrides?.[c.id]),
+				summary: modelDescription(c, provider),
+				presetCount: app.profiles(provider, c.id).length,
+				routingSummary: routingSummaryOf(provider, c.id),
+			})),
+			page,
+			armed,
+		};
+	}
+
+	function routingSummaryOf(provider: DiscoveredProvider, modelId: string): string {
+		const routing = app.profileRouting(provider, modelId);
+		if (!routing) return "not configured";
+		const analysis = analyzeExplicitProfileRouting(routing, app.profiles(provider, modelId));
+		if (analysis.errors.length) return `invalid (${analysis.errors.length} issue(s))`;
+		return routing.enabled ? `enabled as @${routing.aliasSlug}` : "disabled";
+	}
+
+	/** Host for `ui/endpoint-panel.ts`: scan header, model window, source mutations. */
+	async function endpointPanel(ctx: ExtensionCommandContext, provider: DiscoveredProvider): Promise<void> {
+		let live = await runLoader(
+			ctx,
+			`Scanning ${provider.baseUrl}...`,
+			(signal) => fetchModels(provider.baseUrl, provider.apiKey, signal),
+			(error) => recordFailedScan(provider, error),
+		);
+		if (live && live.models.length === 0) {
+			const error = new Error("Endpoint reported no models; retaining the last known-good catalogue.");
+			recordFailedScan(provider, error);
+			ctx.ui.notify(error.message, "warning");
+			live = null;
+		} else if (live) {
+			recordSuccessfulScan(provider, live.models, live.serverType);
+		}
+
+		let page = 0;
+		const armed = new Set<string>();
+		let initialKey: string | undefined;
+
+		for (;;) {
+			const input = endpointPanelInput(provider, live, page, [...armed]);
+			const built = buildEndpointSnapshot(input);
+			const rebuild = () => buildEndpointSnapshot(endpointPanelInput(provider, live, page, [...armed]));
+			const result = await runPanel(ctx, (deps) =>
+				new SettingsPanel({
+					...deps,
+					initialKey,
+					snapshot: () => rebuild().snapshot,
+					apply: (key, raw) => {
+						const m = key.match(/^cfg:source:(.+?):(name|defaultContextWindow|defaultMaxTokens)$/);
+						if (!m || m[1] !== provider.name) return `Unknown setting '${key}'.`;
+						if (m[2] === "name") {
+							const newName = raw.trim();
+							if (!newName) return "Source name cannot be blank.";
+							if (app.listSources().some((c) => c.name === newName && c.name !== provider.name)) {
+								return `Source "${newName}" already exists.`;
+							}
+							if (newName === provider.name) return null;
+							const renamed = app.renameSource(provider, newName);
+							if (!renamed.ok) return `Cannot rename — "${newName}" already exists.`;
+							try {
+								void registerProvider(provider, live ?? cachedCatalog(provider));
+								pi.unregisterProvider(renamed.oldName);
+								app.saveSource(provider);
+								ctx.ui.notify(`Renamed to "${newName}"${live ? "" : " using the cached catalogue"}.`, "info");
+							} catch (error) {
+								app.renameSource(provider, renamed.oldName);
+								return `Rename rolled back: ${errorMessage(error)}`;
+							}
+							return null;
+						}
+						const n = positiveInt(raw);
+						if (n === null) return "Enter a positive whole number greater than zero.";
+						if (m[2] === "defaultContextWindow") provider.defaultContextWindow = n;
+						else provider.defaultMaxTokens = n;
+						app.saveSource(provider);
+						void registerProviderSafe(ctx, provider, live ?? cachedCatalog(provider), "Defaults saved");
+						return null;
+					},
+					activate: (key): PanelActionResult => {
+						if (key === `cfg:source:${provider.name}:apiKey`) return { kind: "close", action: "apikey" };
+						if (key === `cfg:source:${provider.name}:apiKey:clear`) {
+							if (!provider.apiKey) return { kind: "none" };
+							if (!armed.has(key)) {
+								armed.add(key);
+								return { kind: "updated", message: `Press enter again to clear the key on "${provider.name}".` };
+							}
+							armed.delete(key);
+							app.setCredential(provider, undefined);
+							void registerProviderSafe(ctx, provider, live ?? cachedCatalog(provider), "API key cleared");
+							return { kind: "updated", message: "API key cleared; now anonymous." };
+						}
+						if (key === `source:${provider.name}:remove`) {
+							if (!armed.has(key)) {
+								armed.add(key);
+								return {
+									kind: "updated",
+									message: `Press enter again to remove "${provider.name}" — config, cache, presets, and routing are deleted.`,
+								};
+							}
+							pi.unregisterProvider(provider.name);
+							app.removeSource(provider.name);
+							ctx.ui.notify(`Removed "${provider.name}".`, "info");
+							return { kind: "close", action: "home" };
+						}
+						if (key === `source:${provider.name}:rescan`) return { kind: "close", action: "rescan" };
+						if (key === BACK_KEY) return { kind: "close", action: "home" };
+						if (key === PAGE_PREV_KEY) {
+							page = Math.max(0, page - 1);
+							return { kind: "updated" };
+						}
+						if (key === PAGE_NEXT_KEY) {
+							page = Math.min(Math.max(0, built.pages - 1), page + 1);
+							return { kind: "updated" };
+						}
+						if (key.startsWith("model:")) return { kind: "close", action: key };
+						return { kind: "none" };
+					},
+				}),
+			);
+			void built;
+			const action = result?.action;
+			initialKey = undefined;
+			if (!action || action === "home") return;
+			if (action === "rescan") {
+				const next = await runLoader(
+					ctx,
+					`Scanning ${provider.baseUrl}...`,
+					(signal) => fetchModels(provider.baseUrl, provider.apiKey, signal),
+					(error) => recordFailedScan(provider, error),
+				);
+				if (next && next.models.length === 0) {
+					const error = new Error("Endpoint reported no models; retaining the last known-good catalogue.");
+					recordFailedScan(provider, error);
+					ctx.ui.notify(error.message, "warning");
+					live = null;
+				} else if (next) {
+					recordSuccessfulScan(provider, next.models, next.serverType);
+					live = next;
+					ctx.ui.notify(`Re-scan complete: ${next.serverType} · ${next.models.length} model(s).`, "info");
+				} else {
+					live = null;
+				}
+				continue;
+			}
+			if (action === "apikey") {
+				const entered = await askSecretPanel(ctx, `API key for ${provider.name} — never displayed`);
+				if (entered === undefined) continue;
+				const nextApiKey = entered.trim();
+				if (!nextApiKey) {
+					ctx.ui.notify("API key cannot be blank. Use Clear API key for anonymous access.", "warning");
+					continue;
+				}
+				app.setCredential(provider, nextApiKey);
+				const checked = await runLoader(
+					ctx,
+					`Validating ${provider.name} authentication...`,
+					(signal) => fetchModels(provider.baseUrl, provider.apiKey, signal),
+					(error) => recordFailedScan(provider, error),
+				);
+				if (checked?.models.length) {
+					try {
+						await registerProvider(provider, checked);
+						recordSuccessfulScan(provider, checked.models, checked.serverType, false);
+						app.saveSource(provider);
+						live = checked;
+						ctx.ui.notify(`Authentication saved and validated for ${provider.name}.`, "info");
+					} catch (error) {
+						recordFailedScan(provider, error);
+						live = null;
+						ctx.ui.notify(`Authentication saved, but registration failed: ${errorMessage(error)}`, "warning");
+					}
+				} else {
+					live = null;
+					if (provider.cachedModels?.length) {
+						try {
+							await registerProvider(provider, cachedCatalog(provider));
+						} catch (error) {
+							ctx.ui.notify(`Authentication was saved, but cached registration failed: ${errorMessage(error)}`, "warning");
+						}
+					}
+					ctx.ui.notify("Authentication saved but could not be validated; the last known-good catalogue was retained.", "warning");
+				}
+				continue;
+			}
+			if (action.startsWith("model:")) {
+				const id = action.slice("model:".length);
+				const configs = (live?.models ?? provider.cachedModels ?? []).map(extractModelConfig);
+				const config = configs.find((c) => c.id === id);
+				if (config) {
+					await modelPanel(ctx, provider, config, configs, live ?? cachedCatalog(provider) ?? { models: [], serverType: provider.serverType ?? "OpenAI-compatible" });
+				}
+				continue;
+			}
+			return;
+		}
+	}
+
+	async function registerProviderSafe(
+		ctx: ExtensionCommandContext,
+		provider: DiscoveredProvider,
+		catalog: { models: Record<string, unknown>[]; serverType: string } | undefined,
+		feedback: string,
+	): Promise<void> {
+		try {
+			await registerProvider(provider, catalog);
+			ctx.ui.notify(`${feedback}.`, "info");
+		} catch (error) {
+			ctx.ui.notify(`${feedback}; provider remains on its last registered catalogue: ${errorMessage(error)}`, "warning");
+		}
+	}
+
+	/** Host for `ui/endpoint-panel.ts` model screen: live per-field overrides. */
+	async function modelPanel(
+		ctx: ExtensionCommandContext,
+		provider: DiscoveredProvider,
+		config: ModelConfig,
+		allConfigs: ModelConfig[],
+		prefetched: { models: Record<string, unknown>[]; serverType: string },
+	): Promise<void> {
+		const armed = new Set<string>();
+		for (;;) {
+			const built = buildModelPanel();
+			const result = await runPanel(ctx, (deps) =>
+				new SettingsPanel({
+					...deps,
+					snapshot: () => buildModelPanel().snapshot,
+					apply: (key, raw) => {
+						const ov = provider.modelOverrides?.[config.id] ?? {};
+						const write = (patch: ModelOverride, feedback: string) => {
+							provider.modelOverrides = { ...provider.modelOverrides, [config.id]: { ...ov, ...patch } };
+							app.saveSource(provider);
+							void persistModelOverrideRegister(ctx, provider, prefetched, feedback);
+						};
+						if (key === `model:${config.id}:contextWindow` || key === `model:${config.id}:maxTokens`) {
+							if (!raw.trim()) {
+								const next = { ...ov };
+								delete next[key.endsWith("maxTokens") ? "maxTokens" : "contextWindow"];
+								provider.modelOverrides = { ...provider.modelOverrides, [config.id]: next };
+								if (Object.keys(next).length === 0) delete provider.modelOverrides;
+								app.saveSource(provider);
+								void persistModelOverrideRegister(ctx, provider, prefetched, "Override removed");
+								return null;
+							}
+							const n = positiveInt(raw);
+							if (n === null) return "Enter a positive whole number greater than zero.";
+							write(key.endsWith("maxTokens") ? { maxTokens: n } : { contextWindow: n }, `${key.endsWith("maxTokens") ? "Max output tokens" : "Context window"} saved as ${fmt(n)}`);
+							return null;
+						}
+						if (key === `model:${config.id}:reasoning`) {
+							const on = raw !== "true";
+							write({ reasoning: on }, `Reasoning ${on ? "enabled" : "disabled"}`);
+							return null;
+						}
+						if (key === `model:${config.id}:vision`) {
+							const effInput = ov.input ?? config.input ?? ["text"];
+							const next = effInput.includes("image") ? ["text"] : [...new Set([...effInput, "image"])];
+							write({ input: next }, `Vision input ${effInput.includes("image") ? "disabled" : "enabled"}`);
+							return null;
+						}
+						return `Unknown setting '${key}'.`;
+					},
+					activate: (key): PanelActionResult => {
+						if (key === `model:${config.id}:clear`) {
+							if (!armed.has(key)) {
+								armed.add(key);
+								return { kind: "updated", message: `Press enter again to clear overrides on "${config.id}".` };
+							}
+							armed.delete(key);
+							if (provider.modelOverrides) {
+								delete provider.modelOverrides[config.id];
+								if (Object.keys(provider.modelOverrides).length === 0) provider.modelOverrides = undefined;
+							}
+							void persistModelOverrideRegister(ctx, provider, prefetched, "Model overrides cleared");
+							return { kind: "updated", message: "Overrides cleared — server values are effective again." };
+						}
+						if (key === `model:${config.id}:presets`) return { kind: "close", action: "presets" };
+						if (key === `routing:${config.id}`) return { kind: "close", action: "routing" };
+						if (key === BACK_KEY) return { kind: "close", action: "back" };
+						return { kind: "none" };
+					},
+				}),
+			);
+			const action = result?.action;
+			if (!action || action === "back") return;
+			if (action === "presets") {
+				await presetsPanel(ctx, provider, config, allConfigs, prefetched);
+				continue;
+			}
+			if (action === "routing") {
+				await routingPanel(ctx, provider, config, allConfigs, prefetched);
+				continue;
+			}
+			return;
+		}
+
+		function buildModelPanel() {
+			const ov = provider.modelOverrides?.[config.id] ?? {};
+			return buildModelSnapshot({
+				version: modelDiscoveryVersion(),
+				sourceName: provider.name,
+				model: {
+					id: config.id,
+					flags: modelFlags(config, ov),
+					serverContextWindow: config.contextWindow ?? null,
+					serverMaxTokens: config.maxTokens ?? null,
+					serverReasoning: config.reasoning ?? null,
+					serverInput: config.input ?? [],
+					effectiveContextWindow: ov.contextWindow ?? config.contextWindow ?? provider.defaultContextWindow ?? null,
+					effectiveMaxTokens: ov.maxTokens ?? config.maxTokens ?? provider.defaultMaxTokens ?? null,
+					effectiveReasoning: ov.reasoning ?? config.reasoning ?? null,
+					effectiveInput: ov.input ?? config.input ?? ["text"],
+					reportSource: config.source,
+					presetCount: app.profiles(provider, config.id).length,
+					routingSummary: routingSummaryOf(provider, config.id),
+					overridden: Object.keys(ov).length > 0,
+				},
+				armed: [...armed],
+			});
+		}
+	}
+
+	async function persistModelOverrideRegister(
+		ctx: ExtensionCommandContext,
+		provider: DiscoveredProvider,
+		prefetched: { models: Record<string, unknown>[]; serverType: string },
+		feedback: string,
+	): Promise<void> {
+		try {
+			await registerProvider(provider, prefetched);
+			ctx.ui.notify(`${feedback}.`, "info");
+		} catch (error) {
+			ctx.ui.notify(`${feedback}. Provider registration remains on its previous state: ${errorMessage(error)}`, "warning");
+		}
+	}
+
+	// ---------------------------------------------------------------------------
+	// presets + routing hosts
+	// ---------------------------------------------------------------------------
+
+	function profileToFlat(profile: ModelProfile): Record<PresetField, string> {
+		const kwargs = profile.chatTemplateKwargs ?? {};
+		const sampling = profile.sampling ?? {};
+		return {
+			enable_thinking: kwargs.enable_thinking === undefined ? "" : String(kwargs.enable_thinking),
+			reasoning_effort: kwargs.reasoning_effort ?? "",
+			preserve_thinking: kwargs.preserve_thinking === undefined ? "" : String(kwargs.preserve_thinking),
+			temperature: sampling.temperature === undefined ? "" : String(sampling.temperature),
+			"top_p": sampling.topP === undefined ? "" : String(sampling.topP),
+			top_k: sampling.topK === undefined ? "" : String(sampling.topK),
+			min_p: sampling.minP === undefined ? "" : String(sampling.minP),
+			repetition_penalty: sampling.repetitionPenalty === undefined ? "" : String(sampling.repetitionPenalty),
+			presence_penalty: sampling.presencePenalty === undefined ? "" : String(sampling.presencePenalty),
+			frequency_penalty: sampling.frequencyPenalty === undefined ? "" : String(sampling.frequencyPenalty),
+		};
+	}
+
+	function flatToProfile(handle: string, fields: Record<PresetField, string>, exposeAsModel: boolean): ModelProfile {
+		const kwargs: Record<string, unknown> = {};
+		if (fields.enable_thinking !== "") kwargs.enable_thinking = fields.enable_thinking === "true";
+		if (fields.reasoning_effort !== "") kwargs.reasoning_effort = fields.reasoning_effort;
+		if (fields.preserve_thinking !== "") kwargs.preserve_thinking = fields.preserve_thinking === "true";
+		const sampling: ProfileSampling = {};
+		const numField = (key: keyof ProfileSampling, raw: string) => {
+			if (raw === "") return;
+			const n = Number(raw);
+			if (Number.isFinite(n)) sampling[key] = n;
+		};
+		numField("temperature", fields.temperature);
+		numField("topP", fields.top_p);
+		numField("topK", fields.top_k);
+		numField("minP", fields.min_p);
+		numField("repetitionPenalty", fields.repetition_penalty);
+		numField("presencePenalty", fields.presence_penalty);
+		numField("frequencyPenalty", fields.frequency_penalty);
+		return {
+			slug: handle,
+			...(Object.keys(kwargs).length ? { chatTemplateKwargs: kwargs as ModelProfile["chatTemplateKwargs"] } : {}),
+			...(Object.keys(sampling).length ? { sampling } : {}),
+			...(exposeAsModel ? { exposeAsModel: true } : {}),
+		};
+	}
+
+	function draftIssues(draft: PresetDraft): string[] {
+		const profile = flatToProfile(draft.handle, draft.fields, draft.exposeAsModel);
+		const error = validateModelProfile(profile);
+		return error ? [error] : [];
+	}
+
+	interface PresetDraft {
+		handle: string;
+		fields: Record<PresetField, string>;
+		exposeAsModel: boolean;
+		isNew: boolean;
+		previousSlug?: string;
+	}
+
+	async function presetsPanel(
+		ctx: ExtensionCommandContext,
+		provider: DiscoveredProvider,
+		config: ModelConfig,
+		allConfigs: ModelConfig[],
+		prefetched: { models: Record<string, unknown>[]; serverType: string },
+	): Promise<void> {
+		let page = 0;
+		for (;;) {
+			const presets = app.profiles(provider, config.id);
+			const built = buildPresetsPanel(presets);
+			const result = await runPanel(ctx, (deps) =>
+				new SettingsPanel({
+					...deps,
+					snapshot: () => buildPresetsPanel(app.profiles(provider, config.id)).snapshot,
+					apply: () => "Edit a preset to change its fields.",
+					activate: (key): PanelActionResult => {
+						if (key === `preset:${config.id}:add`) return { kind: "close", action: "add" };
+						if (key === `routing:${config.id}`) return { kind: "close", action: "routing" };
+						if (key === PAGE_PREV_KEY) {
+							page = Math.max(0, page - 1);
+							return { kind: "updated" };
+						}
+						if (key === PAGE_NEXT_KEY) {
+							page = Math.min(Math.max(0, built.pages - 1), page + 1);
+							return { kind: "updated" };
+						}
+						if (key === BACK_KEY) return { kind: "close", action: "back" };
+						const m = key.match(/^preset:(.+?):(.+)$/);
+						if (m && m[1] === config.id && m[2] !== "add") return { kind: "close", action: `edit:${m[2]}` };
+						return { kind: "none" };
+					},
+				}),
+			);
+			const action = result?.action;
+			if (!action || action === "back") return;
+			if (action === "add") {
+				await presetEditor(ctx, provider, config, allConfigs, prefetched, {
+					handle: "thinking-medium",
+					fields: { ...emptyPresetFields() },
+					exposeAsModel: true,
+					isNew: true,
+				});
+				continue;
+			}
+			if (action.startsWith("edit:")) {
+				const slug = action.slice("edit:".length);
+				const existing = app.profiles(provider, config.id).find((p) => p.slug === slug);
+				if (existing) {
+					await presetEditor(ctx, provider, config, allConfigs, prefetched, {
+						handle: existing.slug,
+						fields: profileToFlat(existing),
+						exposeAsModel: existing.exposeAsModel !== false,
+						isNew: false,
+						previousSlug: existing.slug,
+					});
+				}
+				continue;
+			}
+			return;
+		}
+
+		function buildPresetsPanel(presets: readonly ModelProfile[]) {
+			return buildPresetsSnapshot({
+				version: modelDiscoveryVersion(),
+				sourceName: provider.name,
+				modelId: config.id,
+				presets: presets.map((p) => ({ slug: p.slug, summary: profileDescription(p, prefetched.serverType, app.profileRouting(provider, config.id) ?? undefined) })),
+				routingSummary: routingSummaryOf(provider, config.id),
+				page,
+			});
+		}
+	}
+
+	function emptyPresetFields(): Record<PresetField, string> {
+		return Object.fromEntries(PRESET_FIELD_ORDER.map((f) => [f, ""])) as Record<PresetField, string>;
+	}
+
+	async function presetEditor(
+		ctx: ExtensionCommandContext,
+		provider: DiscoveredProvider,
+		config: ModelConfig,
+		allConfigs: ModelConfig[],
+		prefetched: { models: Record<string, unknown>[]; serverType: string },
+		draft: PresetDraft,
+	): Promise<void> {
+		const armed = new Set<string>();
+		let page = 0;
+		for (;;) {
+			const built = buildEditor();
+			const result = await runPanel(ctx, (deps) =>
+				new SettingsPanel({
+					...deps,
+					snapshot: () => buildEditor().snapshot,
+					apply: (key, raw) => {
+						const handle = draft.handle;
+						if (key === presetFieldKey(config.id, handle, "slug")) {
+							const slug = raw.trim();
+							const error = validateProfileSlug(slug);
+							if (error) return error;
+							const collision = app.profiles(provider, config.id).some((p) => p.slug === slug && p.slug !== draft.previousSlug);
+							if (collision) return `Preset name "${slug}" is already in use.`;
+							draft.handle = slug;
+							return null;
+						}
+						const fm = key.match(/^cfg:preset:(.+?):(.+?):(.+)$/);
+						if (fm && fm[1] === config.id && fm[2] === handle && (PRESET_FIELD_ORDER as readonly string[]).includes(fm[3])) {
+							const field = fm[3] as PresetField;
+							const value = raw.trim();
+							if (field === "enable_thinking" || field === "preserve_thinking") {
+								if (!["", "true", "false"].includes(value)) return "Choose omitted, true, or false.";
+							}
+							if (field === "reasoning_effort" && !["", "low", "medium", "xhigh"].includes(value)) {
+								return "Choose omitted, low, medium, or xhigh.";
+							}
+							if (value !== "" && !Number.isFinite(Number(value)) && !["enable_thinking", "reasoning_effort", "preserve_thinking"].includes(field)) {
+								return "Enter a number, or leave blank for the server/model default.";
+							}
+							draft.fields[field] = value;
+							return null;
+						}
+						return `Unknown setting '${key}'.`;
+					},
+					activate: (key): PanelActionResult => {
+						const base = presetKey(config.id, draft.handle);
+						if (key === `${base}:expose`) {
+							draft.exposeAsModel = !draft.exposeAsModel;
+							return { kind: "updated", message: draft.exposeAsModel ? "Visible as a fixed model in /model." : "Hidden from /model (routing only)." };
+						}
+						if (key === `${base}:save`) {
+							const issues = draftIssues(draft);
+							if (issues.length) return { kind: "error", message: issues[0] ?? "Invalid draft." };
+							const profile = flatToProfile(draft.handle, draft.fields, draft.exposeAsModel);
+							const validationError = validateProfileForProvider(provider, config, allConfigs, profile, draft.previousSlug);
+							if (validationError) return { kind: "error", message: validationError };
+							// Routing invalidation guard (wizard parity): first press arms.
+							const currentRouting = app.profileRouting(provider, config.id);
+							const profilesBefore = app.profiles(provider, config.id);
+							const prospective = profilesWithCandidate(provider, config.id, profile, draft.previousSlug);
+							const wasValid = currentRouting ? analyzeExplicitProfileRouting(currentRouting, profilesBefore).errors.length === 0 : false;
+							let nextRouting = currentRouting ? { ...currentRouting, levels: { ...currentRouting.levels } } : undefined;
+							if (nextRouting && draft.previousSlug && draft.previousSlug !== draft.handle) {
+								nextRouting.levels = Object.fromEntries(
+									Object.entries(nextRouting.levels).map(([level, slug]) => [level, slug === draft.previousSlug ? draft.handle : slug]),
+								) as typeof nextRouting.levels;
+							}
+							const willBeValid = nextRouting ? analyzeExplicitProfileRouting(nextRouting, prospective).errors.length === 0 : false;
+							if (nextRouting?.enabled && wasValid && !willBeValid && !armed.has("routing-invalid")) {
+								armed.add("routing-invalid");
+								return { kind: "updated", message: "Saving makes the adaptive alias invalid until remapped — press save again to confirm." };
+							}
+							return { kind: "close", action: "save" };
+						}
+						if (key === `${base}:clone`) {
+							const cloneHandle = `${draft.handle}-copy`;
+							draft.handle = cloneHandle;
+							draft.previousSlug = undefined;
+							draft.isNew = true;
+							return { kind: "updated", message: `Editing clone "${cloneHandle}" — save writes it as a new preset.` };
+						}
+						if (key === `${base}:remove`) {
+							if (draft.isNew) return { kind: "close", action: "back" };
+							if (!armed.has(key)) {
+								armed.add(key);
+								return { kind: "updated", message: `Press enter again to remove "${draft.handle}" from "${config.id}".` };
+							}
+							return { kind: "close", action: "remove" };
+						}
+						if (key === PAGE_PREV_KEY) {
+							page = Math.max(0, page - 1);
+							return { kind: "updated" };
+						}
+						if (key === PAGE_NEXT_KEY) {
+							page = Math.min(Math.max(0, built.pages - 1), page + 1);
+							return { kind: "updated" };
+						}
+						if (key === BACK_KEY) return { kind: "close", action: "back" };
+						return { kind: "none" };
+					},
+				}),
+			);
+			const action = result?.action;
+			if (!action || action === "back") return;
+			if (action === "save") {
+				const profile = flatToProfile(draft.handle, draft.fields, draft.exposeAsModel);
+				const currentRouting = app.profileRouting(provider, config.id);
+				const profilesBefore = app.profiles(provider, config.id);
+				const prospective = profilesWithCandidate(provider, config.id, profile, draft.previousSlug);
+				const wasValid = currentRouting ? analyzeExplicitProfileRouting(currentRouting, profilesBefore).errors.length === 0 : false;
+				let nextRouting = currentRouting ? { ...currentRouting, levels: { ...currentRouting.levels } } : undefined;
+				if (nextRouting && draft.previousSlug && draft.previousSlug !== draft.handle) {
+					nextRouting.levels = Object.fromEntries(
+						Object.entries(nextRouting.levels).map(([level, slug]) => [level, slug === draft.previousSlug ? draft.handle : slug]),
+					) as typeof nextRouting.levels;
+				}
+				const willBeValid = nextRouting ? analyzeExplicitProfileRouting(nextRouting, prospective).errors.length === 0 : false;
+				if (nextRouting?.enabled && wasValid && !willBeValid) {
+					// armed earlier in activate; proceeding means confirmed
+				}
+				app.saveProfile(provider, config.id, profile, draft.previousSlug);
+				if (nextRouting) app.saveRouting(provider, config.id, nextRouting);
+				const registered = await persistProfileChange(ctx, provider, prefetched);
+				if (registered) {
+					if (!draft.isNew) {
+						await refreshSelectedProfile(
+							ctx,
+							provider.name,
+							profileModelId(config.id, draft.previousSlug ?? draft.handle),
+							draft.exposeAsModel ? profileModelId(config.id, draft.handle) : config.id,
+						);
+					}
+					await refreshAdaptiveSelection(ctx, provider, config.id);
+					updateThinkingProfileStatus(ctx);
+					ctx.ui.notify(`${draft.isNew ? "Created" : "Updated"} preset "${draft.handle}".`, "info");
+					return;
+				}
+				// registration failed but storage saved; stay in editor for retry
+				continue;
+			}
+			if (action === "remove") {
+				app.removeProfile(provider, config.id, draft.handle);
+				const registered = await persistProfileChange(ctx, provider, prefetched);
+				if (registered) {
+					await refreshSelectedProfile(ctx, provider.name, profileModelId(config.id, draft.handle), config.id);
+					await refreshAdaptiveSelection(ctx, provider, config.id);
+					updateThinkingProfileStatus(ctx);
+					ctx.ui.notify(`Deleted preset "${draft.handle}".`, "info");
+				}
+				return;
+			}
+			return;
+		}
+
+		function buildEditor() {
+			return buildPresetSnapshot({
+				version: modelDiscoveryVersion(),
+				sourceName: provider.name,
+				modelId: config.id,
+				handle: draft.handle,
+				fields: draft.fields,
+				aliasId: profileModelId(config.id, draft.handle),
+				exposeAsModel: draft.exposeAsModel,
+				issues: draftIssues(draft),
+				isNew: draft.isNew,
+				armed: [...armed],
+				page,
+			});
+		}
+	}
+
+
+	async function routingPanel(
+		ctx: ExtensionCommandContext,
+		provider: DiscoveredProvider,
+		config: ModelConfig,
+		allConfigs: ModelConfig[],
+		prefetched: { models: Record<string, unknown>[]; serverType: string },
+	): Promise<void> {
+		const profiles = app.profiles(provider, config.id);
+		if (profiles.length === 0) {
+			ctx.ui.notify("Create at least one preset before configuring adaptive routing.", "warning");
+			return;
+		}
+		const existing = app.profileRouting(provider, config.id);
+		const routing: ModelProfileRouting = existing ? { ...existing, levels: { ...existing.levels } } : defaultProfileRouting(profiles);
+		const armed = new Set<string>();
+		for (;;) {
+			const analysis = analyzeExplicitProfileRouting(routing, app.profiles(provider, config.id));
+			const built = buildRoutingSnapshot({
+				version: modelDiscoveryVersion(),
+				sourceName: provider.name,
+				modelId: config.id,
+				aliasSlug: routing.aliasSlug,
+				aliasId: profileModelId(config.id, routing.aliasSlug),
+				enabled: routing.enabled,
+				levels: { ...routing.levels } as Record<string, string>,
+				choices: app.profiles(provider, config.id).map((p) => p.slug),
+				issues: analysis.errors,
+				armed: [...armed],
+			});
+			const result = await runPanel(ctx, (deps) =>
+				new SettingsPanel({
+					...deps,
+					snapshot: () =>
+						buildRoutingSnapshot({
+							version: modelDiscoveryVersion(),
+							sourceName: provider.name,
+							modelId: config.id,
+							aliasSlug: routing.aliasSlug,
+							aliasId: profileModelId(config.id, routing.aliasSlug),
+							enabled: routing.enabled,
+							levels: { ...routing.levels } as Record<string, string>,
+							choices: app.profiles(provider, config.id).map((p) => p.slug),
+							issues: analyzeExplicitProfileRouting(routing, app.profiles(provider, config.id)).errors,
+							armed: [...armed],
+						}).snapshot,
+					apply: (key, raw) => {
+						if (key === `cfg:routing:${config.id}:alias`) {
+							const alias = raw.trim();
+							const error = validateProfileSlug(alias);
+							if (error) return error;
+							routing.aliasSlug = alias;
+							return null;
+						}
+						if (key === `routing:${config.id}:enabled`) {
+							routing.enabled = raw !== "true";
+							return null;
+						}
+						const lm = key.match(/^routing:(.+?):level:(.+)$/);
+						if (lm && lm[1] === config.id && THINKING_LEVELS.includes(lm[2] as (typeof THINKING_LEVELS)[number])) {
+							const slugs = app.profiles(provider, config.id).map((p) => p.slug);
+							if (raw !== "" && !slugs.includes(raw)) return `"${raw}" is not a preset of this model.`;
+							routing.levels[lm[2] as (typeof THINKING_LEVELS)[number]] = raw;
+							return null;
+						}
+						return `Unknown setting '${key}'.`;
+					},
+					activate: (key): PanelActionResult => {
+						if (key === `routing:${config.id}:conventional`) {
+							const off = conventionalPreset(app.profiles(provider, config.id), "off")?.slug ?? "";
+							const low = conventionalPreset(app.profiles(provider, config.id), "low")?.slug ?? "";
+							const medium = conventionalPreset(app.profiles(provider, config.id), "medium")?.slug ?? "";
+							const xhigh = conventionalPreset(app.profiles(provider, config.id), "xhigh")?.slug ?? "";
+							if (!off || !low || !medium || !xhigh) {
+								return { kind: "error", message: "The four-preset layout needs off/low/medium/xhigh presets — map the levels manually." };
+							}
+							routing.levels = { off, minimal: low, low, medium, high: xhigh, xhigh, max: xhigh };
+							return { kind: "updated", message: "Four-preset layout mapped across all seven Pi levels — save to write." };
+						}
+						if (key === `routing:${config.id}:save`) {
+							const errors = analyzeExplicitProfileRouting(routing, app.profiles(provider, config.id)).errors;
+							if (errors.length) return { kind: "error", message: errors[0] ?? "Invalid mapping." };
+							const aliasId = profileModelId(config.id, routing.aliasSlug);
+							if (allConfigs.some((model) => model.id === aliasId)) {
+								return { kind: "error", message: `Adaptive alias "${aliasId}" collides with a server model.` };
+							}
+							if (!armed.has(key)) {
+								armed.add(key);
+								return { kind: "updated", message: `Press save again to write "${aliasId}" — the base model never changes.` };
+							}
+							return { kind: "close", action: "save" };
+						}
+						if (key === `routing:${config.id}:remove`) {
+							if (!existing) return { kind: "error", message: "No adaptive routing to remove." };
+							if (!armed.has(key)) {
+								armed.add(key);
+								return { kind: "updated", message: `Press enter again to remove adaptive alias "${existing.aliasSlug}" on "${config.id}" — presets and fixed aliases stay.` };
+							}
+							return { kind: "close", action: "remove" };
+						}
+						if (key === BACK_KEY) return { kind: "close", action: "back" };
+						return { kind: "none" };
+					},
+				}),
+			);
+			void built;
+			const action = result?.action;
+			if (!action || action === "back") return;
+			if (action === "save") {
+				const previousAlias = existing?.aliasSlug;
+				app.saveRouting(provider, config.id, routing);
+				const registered = await persistProfileChange(ctx, provider, prefetched);
+				if (registered) {
+					if (previousAlias) {
+						const nextAlias = routing.enabled ? routing.aliasSlug : undefined;
+						await refreshSelectedProfile(
+							ctx,
+							provider.name,
+							profileModelId(config.id, previousAlias),
+							nextAlias ? profileModelId(config.id, nextAlias) : config.id,
+						);
+					}
+					updateThinkingProfileStatus(ctx);
+					ctx.ui.notify("Adaptive routing saved.", "info");
+					return;
+				}
+				continue;
+			}
+			if (action === "remove") {
+				const previousAlias = existing?.aliasSlug;
+				app.removeRouting(provider, config.id);
+				const registered = await persistProfileChange(ctx, provider, prefetched);
+				if (registered) {
+					if (previousAlias) {
+						await refreshSelectedProfile(ctx, provider.name, profileModelId(config.id, previousAlias), config.id);
+					}
+					updateThinkingProfileStatus(ctx);
+					ctx.ui.notify("Adaptive routing removed.", "info");
+				}
+				return;
+			}
+			return;
+		}
+	}
+
+	/** Source picker for browse/presets/routing entries (panel-native replacement of the old tree root). */
+	async function sourcePickerPanel(ctx: ExtensionCommandContext, purpose: string): Promise<string | undefined> {
+		let page = 0;
+		for (;;) {
+			const built = buildPicker();
+			const result = await runPanel(ctx, (deps) =>
+				new SettingsPanel({
+					...deps,
+					snapshot: () => buildPicker().snapshot,
+					apply: () => "This screen has no editable fields.",
+					activate: (key): PanelActionResult => {
+						if (key === PAGE_PREV_KEY) {
+							page = Math.max(0, page - 1);
+							return { kind: "updated" };
+						}
+						if (key === PAGE_NEXT_KEY) {
+							page = page + 1;
+							return { kind: "updated" };
+						}
+						if (key === "source:add") return { kind: "close", action: "source:add" };
+						if (key === BACK_KEY) return { kind: "close", action: "home" };
+						if (key.startsWith("source:")) return { kind: "close", action: key };
+						return { kind: "none" };
+					},
+				}),
+			);
+			const action = result?.action;
+			if (!action || action === "home") return undefined;
+			if (action === "source:add") return "source:add";
+			if (action.startsWith("source:")) return action.slice("source:".length);
+			return undefined;
+		}
+
+		function buildPicker() {
+			return buildSourcePickerSnapshot({
+				version: modelDiscoveryVersion(),
+				purpose,
+				page,
+				sources: app.listSources().map((p) => ({
+					name: p.name,
+					baseUrl: p.baseUrl,
+					serverType: p.serverType ?? "unknown server",
+					modelCount: p.cachedModels?.length ?? 0,
+					availability: sourceAvailability(p),
+					presetCount: Object.values(p.modelProfiles ?? {}).reduce((n, list) => n + list.length, 0),
+				})),
+			});
+		}
+	}
+
+	/** Model picker inside a source (for presets/routing entry points). */
+	async function modelPickerPanel(ctx: ExtensionCommandContext, provider: DiscoveredProvider, purpose: string): Promise<ModelConfig | undefined> {
+		const configs = (provider.cachedModels ?? []).map(extractModelConfig);
+		let page = 0;
+		for (;;) {
+			const built = buildPicker();
+			const result = await runPanel(ctx, (deps) =>
+				new SettingsPanel({
+					...deps,
+					snapshot: () => buildPicker().snapshot,
+					apply: () => "This screen has no editable fields.",
+					activate: (key): PanelActionResult => {
+						if (key === PAGE_PREV_KEY) {
+							page = Math.max(0, page - 1);
+							return { kind: "updated" };
+						}
+						if (key === PAGE_NEXT_KEY) {
+							page = page + 1;
+							return { kind: "updated" };
+						}
+						if (key === BACK_KEY) return { kind: "close", action: "home" };
+						if (key.startsWith("model:")) return { kind: "close", action: key };
+						return { kind: "none" };
+					},
+				}),
+			);
+			const action = result?.action;
+			if (!action || action === "home") return undefined;
+			if (action.startsWith("model:")) {
+				const id = action.slice("model:".length);
+				return configs.find((c) => c.id === id);
+			}
+			return undefined;
+		}
+
+		function buildPicker() {
+			return buildModelPickerSnapshot({
+				version: modelDiscoveryVersion(),
+				sourceName: provider.name,
+				purpose,
+				page,
+				models: configs.map((c) => ({
+					id: c.id,
+					flags: modelFlags(c, provider.modelOverrides?.[c.id]),
+					summary: modelDescription(c, provider),
+					presetCount: app.profiles(provider, c.id).length,
+					routingSummary: routingSummaryOf(provider, c.id),
+				})),
+			});
+		}
+	}
+
+	/** Panel-native add flow (form → probe → review → register). */
+	async function addSourcePanel(ctx: ExtensionCommandContext, presetUrl?: string, presetName?: string): Promise<void> {
+		const draft = {
+			url: presetUrl ?? "",
+			name: presetName?.trim() ?? "",
+			hasKey: false,
+			apiKey: undefined as string | undefined,
+			defaultContextWindow: null as number | null,
+			defaultMaxTokens: null as number | null,
+		};
+		let live: { models: Record<string, unknown>[]; serverType: string } | null = null;
+		let urlError: string | undefined;
+		let page = 0;
+
+		const toAddModels = (): { id: string; flags: string; summary: string; unreported: boolean }[] =>
+			(live?.models ?? []).map((raw) => {
+				const c = extractModelConfig(raw);
+				const ov = overridesOf(draft, c.id);
+				return {
+					id: c.id,
+					flags: modelFlags(c, ov),
+					summary: `ctx ${fmt(ov?.contextWindow ?? c.contextWindow ?? draft.defaultContextWindow ?? null)} · max ${fmt(ov?.maxTokens ?? c.maxTokens ?? draft.defaultMaxTokens ?? null)}`,
+					unreported: (ov?.contextWindow ?? c.contextWindow) === null || (ov?.maxTokens ?? c.maxTokens) === null,
+				};
+			});
+		const perModel = new Map<string, ModelOverride>();
+
+		function overridesOf(_d: typeof draft, id: string): ModelOverride | undefined {
+			return perModel.get(id);
+		}
+
+		for (;;) {
+			const stage = live ? "review" : "form";
+			const snapshotFor = () =>
+				buildAddSnapshot({
+					version: modelDiscoveryVersion(),
+					stage,
+					draft: { url: draft.url, name: draft.name || suggested(), hasKey: draft.hasKey, defaultContextWindow: draft.defaultContextWindow, defaultMaxTokens: draft.defaultMaxTokens },
+					models: toAddModels(),
+					note: live ? (live.models.length === 0 ? "online but no models reported" : undefined) : undefined,
+					urlError,
+					page,
+				});
+			const built = snapshotFor();
+			const result = await runPanel(ctx, (deps) =>
+				new SettingsPanel({
+					...deps,
+					snapshot: () => snapshotFor(),
+					apply: (key, raw) => {
+						if (key === ADD_URL_KEY) {
+							const value = raw.trim();
+							if (!value) return "Endpoint URL cannot be blank.";
+							if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value) && !/^https?:\/\//i.test(value)) return "Endpoint URL must use HTTP or HTTPS.";
+							try {
+								draft.url = normalizeEndpointUrl(value);
+								urlError = undefined;
+								return null;
+							} catch {
+								return "Enter a valid HTTP or HTTPS endpoint URL.";
+							}
+						}
+						if (key === ADD_NAME_KEY) {
+							const name = raw.trim();
+							if (!name) return "Source name cannot be blank.";
+							if (app.findSource(name)) return `Source "${name}" already exists. Open it from the home screen instead.`;
+							draft.name = name;
+							return null;
+						}
+						if (key === ADD_FALLBACK_CTX_KEY || key === ADD_FALLBACK_MAX_KEY) {
+							if (!raw.trim()) {
+								if (key === ADD_FALLBACK_CTX_KEY) draft.defaultContextWindow = null;
+								else draft.defaultMaxTokens = null;
+								return null;
+							}
+							const n = positiveInt(raw);
+							if (n === null) return "Enter a positive whole number greater than zero.";
+							if (key === ADD_FALLBACK_CTX_KEY) draft.defaultContextWindow = n;
+							else draft.defaultMaxTokens = n;
+							return null;
+						}
+						const mm = key.match(/^cfg:add:model:(.+?):(contextWindow|maxTokens)$/);
+						if (mm) {
+							const ov = perModel.get(mm[1]) ?? {};
+							if (!raw.trim()) {
+								const next = { ...ov };
+								delete next[mm[2] as "contextWindow" | "maxTokens"];
+								perModel.set(mm[1], next);
+								return null;
+							}
+							const n = positiveInt(raw);
+							if (n === null) return "Enter a positive whole number greater than zero.";
+							perModel.set(mm[1], { ...ov, [mm[2]]: n });
+							return null;
+						}
+						return `Unknown setting '${key}'.`;
+					},
+					activate: (key): PanelActionResult => {
+						if (key === ADD_KEY_KEY) return { kind: "close", action: "apikey" };
+						if (key === ADD_SCAN_KEY) return { kind: "close", action: "scan" };
+						if (key === ADD_REGISTER_KEY) return { kind: "close", action: "register" };
+						if (key === PAGE_PREV_KEY) {
+							page = Math.max(0, page - 1);
+							return { kind: "updated" };
+						}
+						if (key === PAGE_NEXT_KEY) {
+							page = page + 1;
+							return { kind: "updated" };
+						}
+						if (key === BACK_KEY) return { kind: "close", action: "cancel" };
+						if (key.startsWith("add:model:")) return { kind: "close", action: key };
+						return { kind: "none" };
+					},
+				}),
+			);
+			void built;
+			const action = result?.action;
+			if (!action || action === "cancel") {
+				ctx.ui.notify("Discovery cancelled.", "info");
+				return;
+			}
+			if (action === "apikey") {
+				const entered = await askSecretPanel(ctx, "API key — never displayed");
+				if (entered === undefined) continue;
+				const key = entered.trim();
+				if (!key) {
+					ctx.ui.notify("API key cannot be blank. Leave unset for anonymous access.", "warning");
+					continue;
+				}
+				draft.apiKey = key;
+				draft.hasKey = true;
+				continue;
+			}
+			if (action === "scan") {
+				if (!draft.url) {
+					urlError = "Enter a URL first.";
+					continue;
+				}
+				const probed = await runLoader(ctx, `Probing ${draft.url}${draft.apiKey ? " with API key" : ""}...`, (signal) =>
+					fetchModels(draft.url, draft.apiKey, signal),
+				);
+				if (!probed) {
+					ctx.ui.notify("Probe failed — check the URL, the server, or the API key, then try again.", "warning");
+					continue;
+				}
+				live = probed;
+				if (!draft.name) draft.name = suggested();
+				continue;
+			}
+			if (action.startsWith("add:model:")) {
+				const id = action.slice("add:model:".length);
+				const raw = (live?.models ?? []).find((m) => String((m as { id?: string }).id ?? "") === id);
+				const config = raw ? extractModelConfig(raw) : undefined;
+				if (config) {
+					// per-model edits happen inline in the review stage rows
+					const ov = overridesOf(draft, id) ?? {};
+					const modelSnapshot = () =>
+						buildAddModelSnapshot({
+							version: modelDiscoveryVersion(),
+							draftName: draft.name || suggested(),
+							model: {
+								id,
+								flags: modelFlags(config, ov),
+								serverContextWindow: config.contextWindow ?? null,
+								serverMaxTokens: config.maxTokens ?? null,
+								contextWindow: ov.contextWindow ?? config.contextWindow ?? draft.defaultContextWindow ?? null,
+								maxTokens: ov.maxTokens ?? config.maxTokens ?? draft.defaultMaxTokens ?? null,
+							},
+						});
+					await runPanel(ctx, (deps) =>
+						new SettingsPanel({
+							...deps,
+							snapshot: () => modelSnapshot(),
+							apply: (k, raw2) => {
+								const mm = k.match(/^cfg:add:model:(.+?):(contextWindow|maxTokens)$/);
+								if (!mm || mm[1] !== id) return `Unknown setting '${k}'.`;
+								if (!raw2.trim()) {
+									const next = { ...ov };
+									delete next[mm[2] as "contextWindow" | "maxTokens"];
+									perModel.set(id, next);
+									return null;
+								}
+								const n = positiveInt(raw2);
+								if (n === null) return "Enter a positive whole number greater than zero.";
+								perModel.set(id, { ...ov, [mm[2]]: n });
+								return null;
+							},
+							activate: (k): PanelActionResult => (k === BACK_KEY ? { kind: "close", action: "back" } : { kind: "none" }),
+						}),
+					);
+				}
+				continue;
+			}
+			if (action === "register") {
+				if (!live) continue;
+				const name = draft.name || suggested();
+				const configs = live.models.map(extractModelConfig);
+				const stillMissingCtx = configs.some((c) => (overridesOf(draft, c.id)?.contextWindow ?? c.contextWindow) === null);
+				const stillMissingMax = configs.some((c) => (overridesOf(draft, c.id)?.maxTokens ?? c.maxTokens) === null);
+				if (stillMissingCtx && draft.defaultContextWindow === null) {
+					ctx.ui.notify("Some models never reported a context window — set the fallback row first.", "warning");
+					continue;
+				}
+				if (stillMissingMax && draft.defaultMaxTokens === null) {
+					ctx.ui.notify("Some models never reported max output — set the fallback row first.", "warning");
+					continue;
+				}
+				const provider: DiscoveredProvider = {
+					name,
+					baseUrl: draft.url,
+					apiKey: draft.apiKey,
+					...(draft.defaultContextWindow !== null ? { defaultContextWindow: draft.defaultContextWindow } : {}),
+					...(draft.defaultMaxTokens !== null ? { defaultMaxTokens: draft.defaultMaxTokens } : {}),
+					...(perModel.size ? { modelOverrides: Object.fromEntries(perModel) } : {}),
+				};
+				try {
+					await registerProvider(provider, live);
+					recordSuccessfulScan(provider, live.models, live.serverType, false);
+					app.saveSource(provider);
+					ctx.ui.notify(`Registered ${configs.length} model(s) from ${live.serverType} as "${name}". Use /model to select.`, "info");
+					return;
+				} catch (err) {
+					ctx.ui.notify(`Failed to register: ${err instanceof Error ? err.message : String(err)}`, "error");
+				}
+				continue;
+			}
+		}
+
+		function suggested(): string {
+			return draft.name || (draft.url ? generateProviderName(draft.url) : "?");
+		}
+	}
+
+
+	async function showReport(ctx: ExtensionCommandContext, title: string, text: string): Promise<void> {
+		if (ctx.mode !== "tui") {
+			emitText(ctx, text);
+			return;
+		}
+		const lines = text.split("\n");
+		let page = 0;
+		for (;;) {
+			const snapshot = () => buildReportSnapshot({ title, version: modelDiscoveryVersion(), lines, page });
+			const result = await runPanel(ctx, (deps) =>
+				new SettingsPanel({
+					...deps,
+					snapshot,
+					apply: () => "This report is read-only.",
+					activate: (key): PanelActionResult => {
+						if (key === PAGE_PREV_KEY) {
+							page = Math.max(0, page - 1);
+							return { kind: "updated" };
+						}
+						if (key === PAGE_NEXT_KEY) {
+							page = page + 1;
+							return { kind: "updated" };
+						}
+						if (key === BACK_KEY || key === "close") return { kind: "close", action: "close" };
+						return { kind: "none" };
+					},
+				}),
+			);
+			if (!result?.action || result.action === "close") return;
+		}
+	}
+
+	/** Home dashboard (slice 1b): canonical SettingsPanel; every deep key is panel-native. */
 	async function showMainScreen(ctx: ExtensionCommandContext): Promise<void> {
 		let initialKey: string | undefined;
 		for (;;) {
-			const result = await ctx.ui.custom<PanelResult | string | undefined>(
-				(tui, theme, keybindings, done) =>
-					new SettingsPanel({
-						theme,
-						keybindings,
-						initialKey,
-						snapshot: () => buildHomeSnapshot(buildHomeInput()),
-						apply: (key) =>
-							/^cfg:/.test(key)
-								? "Advanced config is wired in slice 3 of this migration — `/discover doctor` shows effective state."
-								: `Unknown setting '${key}'.`,
+			const result = await runPanel(ctx, (deps) =>
+				new SettingsPanel({
+					...deps,
+					initialKey,
+					snapshot: () => buildHomeSnapshot(buildHomeInput()),
+					apply: (key) =>
+						/^cfg:/.test(key)
+							? "Advanced config is wired in slice 3 of this migration — `/discover doctor` shows effective state."
+							: `Unknown setting '${key}'.`,
 						activate: (key): PanelActionResult => ({ kind: "close", action: key }),
-						requestRender: () => tui.requestRender(),
-						done,
 					}),
-			);
+				);
 			const action = typeof result === "string" ? result : result?.action;
 			if (!action || action === "close" || action === "quit") return;
 			initialKey = action;
@@ -1975,11 +2013,34 @@ export default async function (pi: ExtensionAPI) {
 				continue;
 			}
 			if (action === "source:add") {
-				await showAddScreen(ctx);
+				await addSourcePanel(ctx);
 				continue;
 			}
-			if (action === "browse" || action === "presets" || action === "routing") {
-				await runLegacyBrowseTree(ctx);
+			if (action === "browse") {
+				const picked = await sourcePickerPanel(ctx, "to browse");
+				if (picked === "source:add") {
+					await addSourcePanel(ctx);
+				} else if (picked) {
+					const provider = app.findSource(picked);
+					if (provider) await endpointPanel(ctx, provider);
+				}
+				continue;
+			}
+			if (action === "presets" || action === "routing") {
+				const picked = await sourcePickerPanel(ctx, action === "presets" ? "for presets" : "for adaptive routing");
+				if (picked === "source:add") {
+					await addSourcePanel(ctx);
+					continue;
+			}
+				if (!picked) continue;
+				const provider = app.findSource(picked);
+				if (!provider) continue;
+				const config = await modelPickerPanel(ctx, provider, action === "presets" ? "for presets" : "for adaptive routing");
+				if (!config) continue;
+				const configs = (provider.cachedModels ?? []).map(extractModelConfig);
+				const catalog = cachedCatalog(provider) ?? { models: [], serverType: provider.serverType ?? "OpenAI-compatible" };
+				if (action === "presets") await presetsPanel(ctx, provider, config, configs, catalog);
+				else await routingPanel(ctx, provider, config, configs, catalog);
 				continue;
 			}
 			if (action === "configure-advanced") {
@@ -2008,13 +2069,12 @@ export default async function (pi: ExtensionAPI) {
 			}
 			if (action.startsWith("source:")) {
 				const provider = app.findSource(action.slice("source:".length));
-				if (provider) await showEndpointScreen(ctx, provider);
+				if (provider) await endpointPanel(ctx, provider);
 				continue;
 			}
 			return;
 		}
 	}
-
 	// -----------------------------------------------------------------------
 	// Command: /discover — single entry point
 	// -----------------------------------------------------------------------
@@ -2025,10 +2085,7 @@ export default async function (pi: ExtensionAPI) {
 		else console.log(text);
 	}
 
-	async function showReport(ctx: ExtensionCommandContext, title: string, text: string): Promise<void> {
-		if (ctx.mode === "tui") await runTextView(ctx, title, text.split("\n"));
-		else emitText(ctx, text);
-	}
+
 
 	async function addSourceHeadlessly(
 		ctx: ExtensionCommandContext,
@@ -2081,12 +2138,12 @@ export default async function (pi: ExtensionAPI) {
 					return;
 				case "add":
 					if (!intent.url) {
-						if (ctx.mode === "tui") await showAddScreen(ctx);
+						if (ctx.mode === "tui") await addSourcePanel(ctx);
 						else emitText(ctx, `Missing source URL.\n${DISCOVER_USAGE}`, "error");
 						return;
 					}
 					if (ctx.mode === "tui") {
-						await showAddScreen(ctx, intent.url, intent.providerName);
+						await addSourcePanel(ctx, intent.url, intent.providerName);
 					} else {
 						await addSourceHeadlessly(ctx, intent.url, intent.providerName);
 					}

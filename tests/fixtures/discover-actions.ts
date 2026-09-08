@@ -19,8 +19,10 @@
  *     against `INFO_ONLY_KEYS`.
  *
  * Row-key grammar (canonical, forward-compatible with PLAN §7):
- *   `source:<name>` / `model:<id>:<field>` / `preset:<slug>[:<field>]` /
+ *   `source:<name>` / `model:<id>:<field>` / `preset:<modelId>:<slug>[:<field>]` /
  *   `routing:<modelId>:<part>` are PATTERNS; `<…>` is substituted at render.
+ *   (Storage reality: `provider.modelProfiles[modelId][]` — the model scope is
+ *   part of the preset identity; renamed in slice 1b.)
  *
  * Planned verbs (land in slice 3, `cfg:<scope>:<field>` generic apply — today
  * these capabilities are TUI-wizard-only, which is exactly the drift §3/§9 of
@@ -76,9 +78,9 @@ export const DISCOVER_ACTIONS: readonly DiscoverAction[] = [
 
 	// --- Presets CRUD (index.ts:1103/1243/1262) ---
 	{ key: "presets", verb: "", appMethod: "profiles" },
-	{ key: "preset:<slug>", verb: "", appMethod: "saveProfile" },
-	{ key: "preset:<slug>:<field>", verb: "", appMethod: "saveProfile" },
-	{ key: "preset:<slug>:remove", verb: "", appMethod: "removeProfile" },
+	{ key: "preset:<modelId>:<slug>", verb: "", appMethod: "saveProfile" },
+	{ key: "preset:<modelId>:<slug>:<field>", verb: "", appMethod: "saveProfile" },
+	{ key: "preset:<modelId>:<slug>:remove", verb: "", appMethod: "removeProfile" },
 
 	// --- Adaptive routing (index.ts:994/1164/1165) ---
 	{ key: "routing", verb: "", appMethod: "profileRouting" },
@@ -88,11 +90,10 @@ export const DISCOVER_ACTIONS: readonly DiscoverAction[] = [
 ];
 
 /**
- * Panel row keys rendered TODAY (slice 1a landed): the home dashboard renders
- * all of these as `PanelRow`s (`ui/home.ts` `HOME_ACTION_ROWS` + source
- * rows). `presets`/`routing`/`browse` are TRANSITIONAL — the rows are
- * panel-native but deep navigation still runs the legacy wizard flow behind a
- * close→run→reopen hop; panel-native screens land in slices 1b-3.
+ * Panel row keys rendered TODAY (slice 1b landed): the wizard is retired and
+ * every inventory key is a live `PanelRow` on the panel-native screens
+ * (`ui/home.ts`, `ui/endpoint-panel.ts`, `ui/add-panel.ts`). `PENDING_PANEL_KEYS`
+ * is `{}` — the alignment done-criterion (parity contract §done) is met.
  */
 export const IMPLEMENTED_PANEL_KEYS: readonly string[] = [
 	"home",
@@ -100,10 +101,24 @@ export const IMPLEMENTED_PANEL_KEYS: readonly string[] = [
 	"doctor",
 	"paths",
 	"help",
-	"source:<name>",
-	"source:add",
 	"presets",
 	"routing",
+	"source:<name>",
+	"source:add",
+	"source:remove",
+	"source:rename",
+	"source:credential",
+	"source:defaults",
+	"source:<name>:rescan",
+	"model:<id>:vision",
+	"model:<id>:contextWindow",
+	"model:<id>:maxTokens",
+	"preset:<modelId>:<slug>",
+	"preset:<modelId>:<slug>:<field>",
+	"preset:<modelId>:<slug>:remove",
+	"routing:<modelId>:level:<level>",
+	"routing:<modelId>:conventional",
+	"routing:<modelId>:remove",
 ];
 
 /**
@@ -116,19 +131,4 @@ export const IMPLEMENTED_PANEL_KEYS: readonly string[] = [
  *   S3 = config parity: cfg: apply, overrides, presets, routing, destructive
  *        arm-then-confirm (PLAN §7)
  */
-export const PENDING_PANEL_KEYS: Readonly<Record<string, SliceOwnership>> = {
-	"source:remove": "S3", // row visible S1, arm-then-confirm grammar lands S3
-	"source:rename": "S3",
-	"source:credential": "S3",
-	"source:defaults": "S3",
-	"source:<name>:rescan": "S2",
-	"model:<id>:vision": "S3",
-	"model:<id>:contextWindow": "S3",
-	"model:<id>:maxTokens": "S3",
-	"preset:<slug>": "S3",
-	"preset:<slug>:<field>": "S3",
-	"preset:<slug>:remove": "S3",
-	"routing:<modelId>:level:<level>": "S3",
-	"routing:<modelId>:conventional": "S3",
-	"routing:<modelId>:remove": "S3",
-};
+export const PENDING_PANEL_KEYS: Readonly<Record<string, SliceOwnership>> = {};
