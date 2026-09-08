@@ -88,12 +88,23 @@ export const DISCOVER_ACTIONS: readonly DiscoverAction[] = [
 ];
 
 /**
- * Panel row keys rendered TODAY. Empty at slice 0 by design: `ui/` holds
- * `wizard-shell.ts` plus the freshly vendored primitives, and no host builds
- * a `PanelSnapshot` yet. Slice 1 fills this from the home/tree panel model
- * (and those rows move out of `PENDING_PANEL_KEYS` in the same commit).
+ * Panel row keys rendered TODAY (slice 1a landed): the home dashboard renders
+ * all of these as `PanelRow`s (`ui/home.ts` `HOME_ACTION_ROWS` + source
+ * rows). `presets`/`routing`/`browse` are TRANSITIONAL — the rows are
+ * panel-native but deep navigation still runs the legacy wizard flow behind a
+ * close→run→reopen hop; panel-native screens land in slices 1b-3.
  */
-export const IMPLEMENTED_PANEL_KEYS: readonly string[] = [];
+export const IMPLEMENTED_PANEL_KEYS: readonly string[] = [
+	"home",
+	"status",
+	"doctor",
+	"paths",
+	"help",
+	"source:<name>",
+	"source:add",
+	"presets",
+	"routing",
+];
 
 /**
  * Pending allowlist: inventory key → slice that lands the panel row.
@@ -106,13 +117,6 @@ export const IMPLEMENTED_PANEL_KEYS: readonly string[] = [];
  *        arm-then-confirm (PLAN §7)
  */
 export const PENDING_PANEL_KEYS: Readonly<Record<string, SliceOwnership>> = {
-	home: "S1",
-	status: "S1",
-	doctor: "S1",
-	paths: "S1",
-	help: "S1",
-	"source:<name>": "S1",
-	"source:add": "S1",
 	"source:remove": "S3", // row visible S1, arm-then-confirm grammar lands S3
 	"source:rename": "S3",
 	"source:credential": "S3",
@@ -121,11 +125,9 @@ export const PENDING_PANEL_KEYS: Readonly<Record<string, SliceOwnership>> = {
 	"model:<id>:vision": "S3",
 	"model:<id>:contextWindow": "S3",
 	"model:<id>:maxTokens": "S3",
-	presets: "S1",
 	"preset:<slug>": "S3",
 	"preset:<slug>:<field>": "S3",
 	"preset:<slug>:remove": "S3",
-	routing: "S1",
 	"routing:<modelId>:level:<level>": "S3",
 	"routing:<modelId>:conventional": "S3",
 	"routing:<modelId>:remove": "S3",

@@ -55,9 +55,11 @@ import { createDiscoveryApplication } from "./application.ts";
 import { completeDiscoverArgs, DISCOVER_USAGE, parseDiscoverArgs } from "./commands.ts";
 import {
 	errorMessage,
+	getStorageDiagnostic,
 	recordFailedScan,
 	recordSuccessfulScan,
 	STORAGE_PATH,
+	STORAGE_PATH_DISPLAY,
 	type DiscoveredProvider,
 	type ModelOverride,
 } from "./storage.ts";
@@ -66,8 +68,12 @@ import {
 	buildHomeItems,
 	buildHomeSummary,
 	formatDiscoveryStatus,
+	sourceAvailability,
 } from "./ui-model.ts";
 import { WizardInput, WizardSecretInput, WizardSelect, WizardTextView } from "./ui/wizard-shell.ts";
+import { SettingsPanel, type PanelActionResult, type PanelResult } from "./ui/settings-panel.ts";
+import { buildHomeSnapshot, formatAge, type HomeSnapshotInput, type HomeSourceInput } from "./ui/home.ts";
+import { modelDiscoveryVersion } from "./version.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1833,7 +1839,85 @@ export default async function (pi: ExtensionAPI) {
 	// Screen: main menu
 	// -----------------------------------------------------------------------
 
-	async function showMainScreen(ctx: ExtensionCommandContext): Promise<void> {
+	/** HOME snapshot input assembled from already-loaded state (no network, no writes). */
+	function buildHomeInput(): HomeSnapshotInput {
+		// Newest-first (home.ts contract): last successful scan wins, ties by name.
+		const providers = [...app.listSources()].sort(
+			(a, b) => (b.lastScanned ?? 0) - (a.lastScanned ?? 0) || a.name.localeCompare(b.name),
+		);
+		const sources: HomeSourceInput[] = providers.map((provider) => ({
+			name: provider.name,
+			baseUrl: provider.baseUrl,
+			serverType: provider.serverType ?? "unknown server",
+			modelCount: provider.cachedModels?.length ?? 0,
+			availability: sourceAvailability(provider),
+		}));
+		const lastScan = providers.reduce((latest, p) => Math.max(latest, p.lastScanned ?? 0), 0);
+		const presetCount = providers.reduce(
+			(total, p) => total + Object.values(p.modelProfiles ?? {}).reduce((n, list) => n + list.length, 0),
+			0,
+		);
+		return {
+			version: modelDiscoveryVersion(),
+			sources,
+			storageLine: STORAGE_PATH_DISPLAY,
+			scanLine: `last scan ${formatAge(lastScan || undefined)}`,
+			adaptiveLine: presetCount ? `${presetCount} preset(s) configured` : undefined,
+			diagnostic: getStorageDiagnostic()?.message,
+		};
+	}
+
+	/** Re-scan every source with cache fallback (shared by the home panel and the legacy tree). */
+	async function runRescanAll(ctx: ExtensionCommandContext): Promise<void> {
+  const results = await runLoader(ctx, "Re-scanning all sources...", async (signal) => {
+  					let live = 0;
+  					let cached = 0;
+  					let failed = 0;
+  					for (const provider of app.listSources()) {
+  						if (signal.aborted) break;
+  						try {
+  							const registered = await registerProvider(provider, undefined, signal);
+  							recordSuccessfulScan(provider, registered.rawModels, registered.serverType, false);
+  							app.saveSource(provider);
+  							live++;
+  						} catch (error) {
+  							if (signal.aborted) break;
+  							recordFailedScan(provider, error, false);
+  							if (provider.cachedModels?.length) {
+  								try {
+  									await registerProvider(provider, {
+  										models: provider.cachedModels,
+  										serverType: provider.serverType ?? "OpenAI-compatible",
+  									});
+  									app.saveSource(provider);
+  									cached++;
+  									continue;
+  								} catch {
+  									/* report below without removing the previously registered provider */
+  								}
+  							}
+  							app.saveSource(provider);
+  							failed++;
+  						}
+  					}
+  					return { live, cached, failed };
+  				});
+  				if (results) {
+  					const level = results.failed === 0 && results.cached === 0 ? "info" : "warning";
+  					ctx.ui.notify(
+  						`Re-scan complete: ${results.live} live${results.cached ? `, ${results.cached} kept on cached catalogues` : ""}${results.failed ? `, ${results.failed} unavailable without cache` : ""}.`,
+  						level,
+  					);
+  				}
+  	}
+
+	/**
+	 * Pre-alignment browse tree (TRANSITIONAL, slice 1a): deeper home actions
+	 * close the panel, run this old flow, and the home loop reopens the panel
+	 * afterwards — never a nested overlay (UX-STANDARD: one surface at a time).
+	 * Replaced by panel-native screens in slices 1b-3.
+	 */
+	async function runLegacyBrowseTree(ctx: ExtensionCommandContext): Promise<void> {
 		for (;;) {
 			const providers = app.listSources();
 			const action = await runSelect(
@@ -1849,51 +1933,85 @@ export default async function (pi: ExtensionAPI) {
 			} else if (action === "diagnostics") {
 				await runTextView(ctx, "Model Discovery diagnostics", buildDiagnosticsLines(app.listSources()));
 			} else if (action === "rescan-all") {
-				const results = await runLoader(ctx, "Re-scanning all sources...", async (signal) => {
-					let live = 0;
-					let cached = 0;
-					let failed = 0;
-					for (const provider of app.listSources()) {
-						if (signal.aborted) break;
-						try {
-							const registered = await registerProvider(provider, undefined, signal);
-							recordSuccessfulScan(provider, registered.rawModels, registered.serverType, false);
-							app.saveSource(provider);
-							live++;
-						} catch (error) {
-							if (signal.aborted) break;
-							recordFailedScan(provider, error, false);
-							if (provider.cachedModels?.length) {
-								try {
-									await registerProvider(provider, {
-										models: provider.cachedModels,
-										serverType: provider.serverType ?? "OpenAI-compatible",
-									});
-									app.saveSource(provider);
-									cached++;
-									continue;
-								} catch {
-									/* report below without removing the previously registered provider */
-								}
-							}
-							app.saveSource(provider);
-							failed++;
-						}
-					}
-					return { live, cached, failed };
-				});
-				if (results) {
-					const level = results.failed === 0 && results.cached === 0 ? "info" : "warning";
-					ctx.ui.notify(
-						`Re-scan complete: ${results.live} live${results.cached ? `, ${results.cached} kept on cached catalogues` : ""}${results.failed ? `, ${results.failed} unavailable without cache` : ""}.`,
-						level,
-					);
-				}
+				await runRescanAll(ctx);
 			} else if (action.startsWith("provider:")) {
 				const name = action.slice("provider:".length);
 				const provider = app.findSource(name);
 				if (provider) await showEndpointScreen(ctx, provider);
 			}
+		}
+	}
+
+	/**
+	 * Home dashboard (slice 1a, PLAN §5): the vendored canonical SettingsPanel
+	 * over a fixed-height PanelSnapshot (ui/home.ts, HOME_PANEL_ROWS at every
+	 * width). Keys route close -> run -> reopen with the last key selected;
+	 * esc/q close. TRANSITIONAL keys run the old wizard flow, then reopen.
+	 */
+	async function showMainScreen(ctx: ExtensionCommandContext): Promise<void> {
+		let initialKey: string | undefined;
+		for (;;) {
+			const result = await ctx.ui.custom<PanelResult | string | undefined>(
+				(tui, theme, keybindings, done) =>
+					new SettingsPanel({
+						theme,
+						keybindings,
+						initialKey,
+						snapshot: () => buildHomeSnapshot(buildHomeInput()),
+						apply: (key) =>
+							/^cfg:/.test(key)
+								? "Advanced config is wired in slice 3 of this migration — `/discover doctor` shows effective state."
+								: `Unknown setting '${key}'.`,
+						activate: (key): PanelActionResult => ({ kind: "close", action: key }),
+						requestRender: () => tui.requestRender(),
+						done,
+					}),
+			);
+			const action = typeof result === "string" ? result : result?.action;
+			if (!action || action === "close" || action === "quit") return;
+			initialKey = action;
+			if (action === "discover") {
+				await runRescanAll(ctx);
+				continue;
+			}
+			if (action === "source:add") {
+				await showAddScreen(ctx);
+				continue;
+			}
+			if (action === "browse" || action === "presets" || action === "routing") {
+				await runLegacyBrowseTree(ctx);
+				continue;
+			}
+			if (action === "configure-advanced") {
+				await showReport(
+					ctx,
+					"Advanced configuration",
+					"Wired in slice 3 (cfg:<scope>:<field> apply). Today: `/discover doctor` for effective state, or edit ~/.pi/agent/model-discovery.json directly.",
+				);
+				continue;
+			}
+			if (action === "doctor") {
+				await showReport(ctx, "Model Discovery diagnostics", buildDiagnosticsLines(app.listSources()).join("\n"));
+				continue;
+			}
+			if (action === "status") {
+				await showReport(ctx, "Model Discovery status", formatDiscoveryStatus(app.listSources()));
+				continue;
+			}
+			if (action === "paths") {
+				await showReport(ctx, "Model Discovery paths", `Configuration: ${STORAGE_PATH}`);
+				continue;
+			}
+			if (action === "help") {
+				await showReport(ctx, "Model Discovery help", DISCOVER_USAGE);
+				continue;
+			}
+			if (action.startsWith("source:")) {
+				const provider = app.findSource(action.slice("source:".length));
+				if (provider) await showEndpointScreen(ctx, provider);
+				continue;
+			}
+			return;
 		}
 	}
 

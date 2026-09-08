@@ -5,6 +5,8 @@ import test from "node:test";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import extension from "./index.ts";
 import { STORAGE_PATH, type DiscoveredProvider } from "./storage.ts";
+import { HOME_PANEL_ROWS } from "./ui/home.ts";
+import { modelDiscoveryVersion } from "./version.ts";
 
 type CommandRegistration = {
 	description?: string;
@@ -39,13 +41,18 @@ function harness() {
 	return { api, commands, tools, events, providers, unregistered };
 }
 
-function context(mode: "tui" | "print" | "rpc", customCalls: unknown[] = [], notifications: string[] = []): ExtensionCommandContext {
+function context(
+	mode: "tui" | "print" | "rpc",
+	customCalls: unknown[] = [],
+	notifications: string[] = [],
+	factories: unknown[] = [],
+): ExtensionCommandContext {
 	return {
 		mode,
 		hasUI: mode !== "print",
 		ui: {
 			notify: (message: string) => { notifications.push(message); },
-			custom: async (_factory: unknown, options: unknown) => { customCalls.push(options); return null; },
+			custom: async (factory: unknown, options: unknown) => { customCalls.push(options); factories.push(factory); return null; },
 			confirm: async () => false,
 			input: async () => undefined,
 		},
@@ -74,16 +81,40 @@ test("adapter registers one discover command and preserves the discover_models t
 	assert.ok(h.events.includes("before_provider_request"));
 });
 
-test("bare TUI command opens an explicit responsive overlay", async () => {
+test("bare TUI command opens the canonical fixed-height home panel (slice 1a)", async () => {
 	const h = harness();
 	await extension(h.api);
 	const calls: unknown[] = [];
-	await h.commands.get("discover")?.handler("", context("tui", calls));
+	const factories: unknown[] = [];
+	await h.commands.get("discover")?.handler("", context("tui", calls, [], factories));
 	assert.equal(calls.length, 1);
-	assert.deepEqual(calls[0], {
-		overlay: true,
-		overlayOptions: { anchor: "center", width: 88, minWidth: 36, maxHeight: "90%", margin: 1 },
-	});
+	// Home is the vendored SettingsPanel rendered INLINE (delegate pattern) — no wizard overlay.
+	assert.equal(calls[0], undefined);
+	const factory = factories[0] as (
+		tui: unknown,
+		theme: unknown,
+		keybindings: unknown,
+		done: (r: unknown) => void,
+	) => {
+		render(width: number): string[];
+		handleInput?(data: string): void;
+	};
+	assert.equal(typeof factory, "function");
+	const theme = {
+		fg: (_c: string, s: string) => s,
+		bold: (s: string) => s,
+	};
+	const keybindings = { matches: () => false, getKeys: () => [] };
+	const panel = factory({ requestRender: () => {} }, theme, keybindings, () => {});
+	for (const width of [80, 62, 40, 20]) {
+		assert.equal(panel.render(width).length, HOME_PANEL_ROWS, `home panel height at width ${width}`);
+	}
+	const home = panel.render(80).join("\n");
+	assert.match(home, /Model Discovery/);
+	assert.match(home, new RegExp(`v${modelDiscoveryVersion()}`));
+	assert.match(home, /Actions/);
+	assert.match(home, /Discover now/);
+	assert.match(home, /Configure advanced/);
 });
 
 test("bare and status commands emit useful text outside TUI", async () => {

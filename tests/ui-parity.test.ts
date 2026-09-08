@@ -166,8 +166,10 @@ test("every inventory key is an implemented panel row or a shrinking pending key
 		assert.ok(inventoryKeys.has(key), `pending key "${key}" is not in the inventory`);
 		assert.ok(["S1", "S2", "S3"].includes(PENDING_PANEL_KEYS[key]), `pending key "${key}" lacks S1/S2/S3 ownership`);
 	}
-	// Shrink-only: this frozen slice-0 allowlist is the ceiling — growth fails.
-	const SLICE0_ALLOWLIST = [
+	// Shrink-only: the frozen slice-0 allowlist is the CEILING — any key that
+	// is pending now but was not pending at slice 0 fails here. Keys leaving
+	// the ceiling (into IMPLEMENTED_PANEL_KEYS) is the intended progress.
+	const SLICE0_ALLOWLIST = new Set([
 		"doctor",
 		"help",
 		"home",
@@ -191,9 +193,10 @@ test("every inventory key is an implemented panel row or a shrinking pending key
 		"source:remove",
 		"source:rename",
 		"status",
-	];
-	assert.equal(pendingKeys.length, SLICE0_ALLOWLIST.length, "slice-0 allowlist snapshot drifted");
-	assert.deepEqual(pendingKeys, SLICE0_ALLOWLIST, "allowlist may only shrink — move keys to IMPLEMENTED_PANEL_KEYS");
+	]);
+	for (const key of pendingKeys) {
+		assert.ok(SLICE0_ALLOWLIST.has(key), `allowlist grew beyond slice-0 ceiling: "${key}"`);
+	}
 	assert.ok(
 		IMPLEMENTED_PANEL_KEYS.length + pendingKeys.length === inventoryKeys.size,
 		"implemented + pending must equal the inventory size",

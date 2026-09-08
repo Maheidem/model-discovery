@@ -48,6 +48,11 @@ export interface StorageDiagnostic {
 }
 
 export const STORAGE_PATH = join(os.homedir(), ".pi", "agent", "model-discovery.json");
+
+/** Home-relative form of STORAGE_PATH for UI display (`~/.pi/...`). */
+export const STORAGE_PATH_DISPLAY = STORAGE_PATH.startsWith(os.homedir())
+	? `~${STORAGE_PATH.slice(os.homedir().length)}`
+	: STORAGE_PATH;
 let latestStorageDiagnostic: StorageDiagnostic | undefined;
 
 export function getStorageDiagnostic(): StorageDiagnostic | undefined {
