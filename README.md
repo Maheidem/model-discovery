@@ -1,6 +1,6 @@
 # @maheidem/model-discovery
 
-A responsive, hierarchical Pi wizard for discovering and managing local AI model sources. It works with llama.cpp, oMLX, Ollama, vLLM, SGLang, LM Studio, and other OpenAI-compatible servers, with useful status and diagnostics in TUI, RPC, JSON, and print modes.
+A panel-based Pi control surface for discovering and managing local AI model sources. It works with llama.cpp, oMLX, Ollama, vLLM, SGLang, LM Studio, and other OpenAI-compatible servers, with useful status and diagnostics in TUI, RPC, JSON, and print modes.
 
 ## Features
 
@@ -18,9 +18,24 @@ A responsive, hierarchical Pi wizard for discovering and managing local AI model
 - **Authenticated endpoints** — enroll, replace, validate, or clear bearer API keys through masked TUI input
 - **Multi-endpoint management** — add, rename, scan, and remove local model sources
 - **LLM-callable tool** — the `discover_models` tool can register endpoints on the agent's behalf
-- **Shared Pi UX** — responsive bordered wizard steps, searchable lists, injected keybindings, scrolling previews, cancellable loaders, and masked secrets
-- **Headless command surface** — stable status, diagnostics, paths, source listing, and explicit add/remove actions for RPC and scripts
+- **Shared Pi UX** — one centralized home dashboard plus fixed-height secondary panels (vendored `SettingsPanel` kit), fixed-frame rendering that can never smear the composer, injected keybindings, searchable windows, cancellable loaders, and masked secrets
+- **Headless command surface** — every panel mutation has a nested `/discover` verb with identical semantics (panel ≡ command ≡ headless); stable status, diagnostics, paths, and explicit add/remove actions for RPC and scripts
 - **Persistent storage** in `~/.pi/agent/model-discovery.json`
+
+## Terminal UI (v0.9.0)
+
+`/discover` opens one centralized home dashboard (vendored `SettingsPanel`) with a live health summary, fixed 23-row frames everywhere, and one surface at a time — the composer/input bar never moves or smears.
+
+| Surface | Open | Contents |
+| --- | --- | --- |
+| Home dashboard | `/discover` | version header, per-source health rows, scan status, actions (add, presets, routing, rescan, doctor, configure advanced…) |
+| Source panel | pick a source | live scan header, rename, masked API key entry (validate-and-revalidate), fallback ctx/max, per-model overrides, arm-then-confirm remove |
+| Model panel | model row | server vs override vs effective values, vision toggle, presets and routing entries |
+| Presets / routing | presets · routing rows | draft-until-save editor; four-preset conventional layout mapped across the seven Pi thinking levels |
+| Advanced hub | `Configure advanced…` | re-scan all, diagnostics, storage path, command reference, per-source config entries |
+| Tool cards | `discover_models` | neutral per-state cards: `✓ registered`, `⊘ online · no models`, `✗ failed` — plus the next action |
+
+Parity rules (enforced by `tests/ui-parity.test.ts`): every panel row key maps to a nested `/discover` verb and an application method; secrets are accepted **only** through the masked field or `--key-from-env`, never inline; destructive rows require two presses in TUI and `--yes` headless; failure severity is read from authoritative `isError` flags, never from message text.
 
 ## Installation
 
@@ -34,7 +49,7 @@ pi install git:github.com/Maheidem/model-discovery
 
 ## Usage
 
-Run bare `/discover` in TUI mode to open the source wizard:
+Run bare `/discover` in TUI mode to open the home dashboard:
 
 ```text
 Sources → source details → model details → presets and adaptive routing
@@ -43,7 +58,7 @@ Sources → source details → model details → presets and adaptive routing
 
 The home screen shows source and cached-model health before offering the primary actions. Every list supports Pi's configured navigation/confirm/cancel bindings and type-to-filter. Escape returns to the logical parent. Long diagnostics and exact-request previews use a scrolling secondary view rather than clipping the footer.
 
-From the wizard you can:
+From the dashboard you can:
 
 - **Add source** — enter a URL, choose anonymous or API-key authentication, probe it, review models, and register
 - **Re-scan** — refresh one source or every source while retaining last known-good catalogues on failure
@@ -65,6 +80,18 @@ The same root command has a scriptable surface. Bare `/discover` prints status o
 /discover source add http://192.168.1.100:8080
 /discover source add http://192.168.1.100:8080 --name my-llama
 /discover source remove my-llama --yes
+/discover rescan-all
+/discover source rename my-llama llama-box
+/discover source auth my-llama --key-from-env LLAMA_API_KEY
+/discover source defaults my-llama ctx 131072 max 16384
+/discover source rescan my-llama
+/discover model qwen3-32b vision on
+/discover model qwen3-32b ctx 4096 --source my-llama
+/discover preset set my-llama qwen3-32b focused temperature 0.3
+/discover preset remove my-llama qwen3-32b focused --yes
+/discover routing set my-llama qwen3-32b medium fast
+/discover routing conventional my-llama qwen3-32b
+/discover routing remove my-llama qwen3-32b --yes
 /discover help
 ```
 
@@ -74,7 +101,7 @@ The original direct-add shorthand remains compatible:
 /discover http://192.168.1.100:8080
 ```
 
-In TUI mode, add commands enter the full enrollment wizard. Outside TUI, source add probes and registers an anonymous source using server-reported/default values. Configure credentials through the masked TUI rather than command arguments. Source removal requires confirmation in TUI and requires explicit `--yes` outside TUI.
+In TUI mode, add commands enter the full enrollment flow (form → probe → review → register). Outside TUI, source add probes and registers an anonymous source using server-reported/default values. Credentials are configured through the masked panel field or `--key-from-env` — never as inline arguments. Destructive commands require confirmation in TUI and explicit `--yes` outside TUI.
 
 Enrollment explicitly asks whether the source is anonymous or requires an API key. API-key input is masked and is sent as `Authorization: Bearer <key>` for both `/v1/models` discovery and inference. The key is stored unencrypted in `~/.pi/agent/model-discovery.json`; the extension writes that file atomically with owner-only (`0600`) permissions. Use **Authentication** on an existing source to replace, validate, or clear its key without losing the cached catalogue.
 

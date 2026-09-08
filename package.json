@@ -1,6 +1,6 @@
 {
   "name": "@maheidem/model-discovery",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "type": "module",
   "description": "Interactive Pi wizard for discovering local AI endpoints and defining named thinking/sampling profiles.",
   "license": "MIT",
