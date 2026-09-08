@@ -6,6 +6,7 @@ export type DiscoveryIntent =
 	| { kind: "help" }
 	| { kind: "add"; url?: string; providerName?: string }
 	| { kind: "remove"; name: string; confirmed: boolean }
+	| { kind: "rescan-all" }
 	// --- nested mutation verbs (slice 3, D3 all-mutations parity) ---------
 	| { kind: "source-open"; name: string }
 	| { kind: "source-rename"; oldName: string; newName: string }
@@ -25,6 +26,7 @@ export const DISCOVER_USAGE = [
 	"/discover <url>                    add a source (shorthand for source add)",
 	"/discover status                   show source and catalogue health",
 	"/discover doctor                   show actionable diagnostics",
+	"/discover rescan-all              refetch + re-register every source",
 	"/discover paths                    show the configuration path",
 	"/discover help                     show this help",
 	"",
@@ -72,6 +74,7 @@ export function parseDiscoverArgs(args?: string): DiscoveryIntent {
 	if (!raw) return { kind: "open" };
 	if (raw === "status" || raw === "source list") return { kind: "status" };
 	if (raw === "doctor") return { kind: "doctor" };
+	if (raw === "rescan-all" || raw === "rescan all") return { kind: "rescan-all" };
 	if (raw === "paths") return { kind: "paths" };
 	if (raw === "help") return { kind: "help" };
 	if (raw === "source add") return { kind: "add" };
@@ -203,6 +206,7 @@ export function completeDiscoverArgs(prefix: string, sourceNames: readonly strin
 	const values = [
 		"status",
 		"doctor",
+		"rescan-all",
 		"paths",
 		"help",
 		"source list",

@@ -97,6 +97,7 @@ import {
 	buildAddSnapshot,
 } from "./ui/add-panel.ts";
 import { buildReportSnapshot } from "./ui/report-panel.ts";
+import { buildAdvancedSnapshot } from "./ui/advanced-panel.ts";
 import { SecretField } from "./ui/secret-field.ts";
 import { PAGE_NEXT_KEY, PAGE_PREV_KEY } from "./ui/panel-frame.ts";
 import { SettingsPanel, type PanelActionResult, type PanelResult } from "./ui/settings-panel.ts";
@@ -799,6 +800,106 @@ export default async function (pi: ExtensionAPI) {
 				overlayOptions: { anchor: "center", width: 72, minWidth: 36, maxHeight: "90%", margin: 1 },
 			},
 		);
+	}
+
+	/** Validate + register a freshly entered/supplied API key; never echoes it. */
+	async function saveApiKey(ctx: ExtensionCommandContext, provider: DiscoveredProvider, nextApiKey: string): Promise<void> {
+		app.setCredential(provider, nextApiKey);
+		app.saveSource(provider);
+		const checked = await runLoader(
+			ctx,
+			`Validating ${provider.name} authentication...`,
+			(signal) => fetchModels(provider.baseUrl, provider.apiKey, signal),
+			(error) => recordFailedScan(provider, error),
+		);
+		if (checked?.models.length) {
+			try {
+				await registerProvider(provider, checked);
+				recordSuccessfulScan(provider, checked.models, checked.serverType, false);
+				app.saveSource(provider);
+				emitText(ctx, `Authentication saved and validated for ${provider.name} (${checked.models.length} models).`);
+			} catch (error) {
+				recordFailedScan(provider, error);
+				emitText(ctx, `Authentication saved, but registration failed: ${errorMessage(error)}`, "warning");
+			}
+			return;
+		}
+		if (provider.cachedModels?.length) {
+			try {
+				await registerProvider(provider, cachedCatalog(provider));
+			} catch (error) {
+				emitText(ctx, `Authentication was saved, but cached registration failed: ${errorMessage(error)}`, "warning");
+			}
+		}
+		emitText(ctx, "Authentication saved but could not be validated; the last known-good catalogue was retained.", "warning");
+	}
+
+	/** Host for `ui/advanced-panel.ts` — maintenance hub + per-source config entries. */
+	async function advancedPanel(ctx: ExtensionCommandContext): Promise<void> {
+		let page = 0;
+		for (;;) {
+			const sources = app.listSources().map((p) => ({
+				name: p.name,
+				serverType: p.serverType ?? "OpenAI-compatible",
+				hasApiKey: Boolean(p.apiKey),
+				cachedCount: p.cachedModels?.length ?? 0,
+			}));
+			const diagnostic = getStorageDiagnostic();
+			const rebuild = () =>
+				buildAdvancedSnapshot({
+					version: modelDiscoveryVersion(),
+					storagePath: STORAGE_PATH_DISPLAY,
+					sources,
+					page,
+					notes: diagnostic ? [diagnostic.message] : undefined,
+				});
+			const result = await runPanel(ctx, (deps) =>
+				new SettingsPanel({
+					...deps,
+					snapshot: () => rebuild().snapshot,
+					apply: () => "Configuration fields live on each source panel — pick a source above.",
+					activate: (key): PanelActionResult => {
+						if (key === PAGE_NEXT_KEY) {
+							page = rebuild().page + 1 < rebuild().pages ? page + 1 : page;
+							return { kind: "updated" };
+						}
+						if (key === PAGE_PREV_KEY) {
+							page = Math.max(0, page - 1);
+							return { kind: "updated" };
+						}
+						if (key === BACK_KEY) return { kind: "close", action: "back" };
+						if (key === "rescan-all" || key === "doctor" || key === "paths" || key === "help-verbs") return { kind: "close", action: key };
+						if (key.startsWith("cfg:source:") && key.endsWith(":advanced")) return { kind: "close", action: key };
+						return { kind: "none" };
+					},
+				}),
+			);
+			const action = result?.action;
+			if (!action || action === "back") return;
+			if (action === "rescan-all") {
+				await runRescanAll(ctx);
+				continue;
+			}
+			if (action === "doctor") {
+				await showReport(ctx, "Model Discovery diagnostics", buildDiagnosticsLines(app.listSources()).join("\n"));
+				continue;
+			}
+			if (action === "paths") {
+				await showReport(ctx, "Model Discovery paths", `Configuration: ${STORAGE_PATH}`);
+				continue;
+			}
+			if (action === "help-verbs") {
+				await showReport(ctx, "Command reference", DISCOVER_USAGE);
+				continue;
+			}
+			if (action.startsWith("cfg:source:") && action.endsWith(":advanced")) {
+				const name = action.slice("cfg:source:".length, -":advanced".length);
+				const provider = app.findSource(name);
+				if (provider) await endpointPanel(ctx, provider);
+				continue;
+			}
+			return;
+		}
 	}
 
 	function cachedCatalog(provider: DiscoveredProvider): { models: Record<string, unknown>[]; serverType: string } | undefined {
@@ -2045,11 +2146,7 @@ export default async function (pi: ExtensionAPI) {
 				continue;
 			}
 			if (action === "configure-advanced") {
-				await showReport(
-					ctx,
-					"Advanced configuration",
-					"Wired in slice 3 (cfg:<scope>:<field> apply). Today: `/discover doctor` for effective state, or edit ~/.pi/agent/model-discovery.json directly.",
-				);
+				await advancedPanel(ctx);
 				continue;
 			}
 			if (action === "doctor") {
@@ -2240,34 +2337,7 @@ export default async function (pi: ExtensionAPI) {
 						emitText(ctx, "API key cannot be blank. Clear it from the source panel for anonymous access.", "error");
 						return;
 					}
-					app.setCredential(provider, nextApiKey);
-					app.saveSource(provider);
-					const checked = await runLoader(
-						ctx,
-						`Validating ${provider.name} authentication...`,
-						(signal) => fetchModels(provider.baseUrl, provider.apiKey, signal),
-						(error) => recordFailedScan(provider, error),
-					);
-					if (checked?.models.length) {
-						try {
-							await registerProvider(provider, checked);
-							recordSuccessfulScan(provider, checked.models, checked.serverType, false);
-							app.saveSource(provider);
-							emitText(ctx, `Authentication saved and validated for ${provider.name} (${checked.models.length} models).`);
-						} catch (error) {
-							recordFailedScan(provider, error);
-							emitText(ctx, `Authentication saved, but registration failed: ${errorMessage(error)}`, "warning");
-						}
-					} else {
-						if (provider.cachedModels?.length) {
-							try {
-								await registerProvider(provider, cachedCatalog(provider));
-							} catch (error) {
-								emitText(ctx, `Authentication was saved, but cached registration failed: ${errorMessage(error)}`, "warning");
-							}
-						}
-						emitText(ctx, "Authentication saved but could not be validated; the last known-good catalogue was retained.", "warning");
-					}
+					await saveApiKey(ctx, provider, nextApiKey);
 					return;
 				}
 				case "source-defaults": {
@@ -2511,6 +2581,9 @@ export default async function (pi: ExtensionAPI) {
 					}
 					return;
 				}
+				case "rescan-all":
+					await runRescanAll(ctx);
+					return;
 				case "invalid":
 					emitText(ctx, `${intent.message}\n${DISCOVER_USAGE}`, "error");
 			}
