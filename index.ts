@@ -17,6 +17,7 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { BorderedLoader } from "@earendil-works/pi-coding-agent";
 import type { SelectItem } from "@earendil-works/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
 	analyzeExplicitProfileRouting,
@@ -2168,6 +2169,348 @@ export default async function (pi: ExtensionAPI) {
 					emitText(ctx, `Removed source "${provider.name}".`);
 					return;
 				}
+				case "source-open": {
+					const provider = app.findSource(intent.name);
+					if (!provider) {
+						emitText(ctx, `Unknown source: ${intent.name}`, "error");
+						return;
+					}
+					if (ctx.mode === "tui") await endpointPanel(ctx, provider);
+					else await showReport(ctx, `Source ${provider.name}`, formatDiscoveryStatus([provider]));
+					return;
+				}
+				case "source-rename": {
+					const provider = app.findSource(intent.oldName);
+					if (!provider) {
+						emitText(ctx, `Unknown source: ${intent.oldName}`, "error");
+						return;
+					}
+					const newName = intent.newName.trim();
+					if (!newName) {
+						emitText(ctx, "Source name cannot be blank.", "error");
+						return;
+					}
+					if (app.listSources().some((c) => c.name === newName)) {
+						emitText(ctx, `Source "${newName}" already exists.`, "error");
+						return;
+					}
+					const renamed = app.renameSource(provider, newName);
+					if (!renamed.ok) {
+						emitText(ctx, `Cannot rename — "${newName}" already exists.`, "error");
+						return;
+					}
+					try {
+						await registerProvider(provider, cachedCatalog(provider));
+						try {
+							pi.unregisterProvider(renamed.oldName);
+						} catch {
+							/* stale registration may already be gone */
+						}
+						app.saveSource(provider);
+						emitText(ctx, `Renamed "${renamed.oldName}" to "${newName}".`);
+					} catch (error) {
+						app.renameSource(provider, renamed.oldName);
+						emitText(ctx, `Rename rolled back: ${errorMessage(error)}`, "error");
+					}
+					return;
+				}
+				case "source-auth": {
+					const provider = app.findSource(intent.name);
+					if (!provider) {
+						emitText(ctx, `Unknown source: ${intent.name}`, "error");
+						return;
+					}
+					let nextApiKey: string | undefined;
+					if (intent.keyFromEnv) {
+						const value = process.env[intent.keyFromEnv]?.trim();
+						if (!value) {
+							emitText(ctx, `Environment variable ${intent.keyFromEnv} is not set or empty. Secrets are never accepted inline.`, "error");
+							return;
+						}
+						nextApiKey = value;
+					} else if (ctx.mode === "tui") {
+						const entered = await askSecretPanel(ctx, `API key for ${provider.name} — never displayed`);
+						if (entered === undefined) return;
+						nextApiKey = entered.trim();
+					} else {
+						emitText(ctx, `Interactive key entry needs a TUI. Use: /discover source auth ${intent.name} --key-from-env ENV`, "error");
+						return;
+					}
+					if (!nextApiKey) {
+						emitText(ctx, "API key cannot be blank. Clear it from the source panel for anonymous access.", "error");
+						return;
+					}
+					app.setCredential(provider, nextApiKey);
+					app.saveSource(provider);
+					const checked = await runLoader(
+						ctx,
+						`Validating ${provider.name} authentication...`,
+						(signal) => fetchModels(provider.baseUrl, provider.apiKey, signal),
+						(error) => recordFailedScan(provider, error),
+					);
+					if (checked?.models.length) {
+						try {
+							await registerProvider(provider, checked);
+							recordSuccessfulScan(provider, checked.models, checked.serverType, false);
+							app.saveSource(provider);
+							emitText(ctx, `Authentication saved and validated for ${provider.name} (${checked.models.length} models).`);
+						} catch (error) {
+							recordFailedScan(provider, error);
+							emitText(ctx, `Authentication saved, but registration failed: ${errorMessage(error)}`, "warning");
+						}
+					} else {
+						if (provider.cachedModels?.length) {
+							try {
+								await registerProvider(provider, cachedCatalog(provider));
+							} catch (error) {
+								emitText(ctx, `Authentication was saved, but cached registration failed: ${errorMessage(error)}`, "warning");
+							}
+						}
+						emitText(ctx, "Authentication saved but could not be validated; the last known-good catalogue was retained.", "warning");
+					}
+					return;
+				}
+				case "source-defaults": {
+					const provider = app.findSource(intent.name);
+					if (!provider) {
+						emitText(ctx, `Unknown source: ${intent.name}`, "error");
+						return;
+					}
+					if (intent.contextWindow !== undefined) provider.defaultContextWindow = intent.contextWindow;
+					if (intent.maxTokens !== undefined) provider.defaultMaxTokens = intent.maxTokens;
+					app.saveSource(provider);
+					await registerProviderSafe(ctx, provider, cachedCatalog(provider), "Fallback defaults saved");
+					return;
+				}
+				case "source-rescan": {
+					const provider = app.findSource(intent.name);
+					if (!provider) {
+						emitText(ctx, `Unknown source: ${intent.name}`, "error");
+						return;
+					}
+					const registered = await runLoader(
+						ctx,
+						`Re-scanning ${provider.name}...`,
+						(signal) => registerProvider(provider, undefined, signal),
+						(error) => recordFailedScan(provider, error),
+					);
+					if (registered) {
+						recordSuccessfulScan(provider, registered.rawModels, registered.serverType, false);
+						app.saveSource(provider);
+						emitText(ctx, `Re-scanned "${provider.name}" (${registered.serverType}): ${registered.rawModels.length} model(s) live.`);
+						return;
+					}
+					if (provider.cachedModels?.length) {
+						try {
+							await registerProvider(provider, cachedCatalog(provider));
+							app.saveSource(provider);
+							emitText(ctx, `Scan failed; "${provider.name}" re-registered from its cached catalogue.`, "warning");
+						} catch (error) {
+							emitText(ctx, `Scan failed and cached re-registration failed too: ${errorMessage(error)}`, "error");
+						}
+						return;
+					}
+					emitText(ctx, `Scan failed and no cached catalogue exists for "${provider.name}".`, "error");
+					return;
+				}
+				case "model-set": {
+					const sources = intent.source ? [app.findSource(intent.source)].filter((s): s is NonNullable<typeof s> => Boolean(s)) : app.listSources();
+					if (intent.source && sources.length === 0) {
+						emitText(ctx, `Unknown source: ${intent.source}`, "error");
+						return;
+					}
+					const provider = sources.find((s) => (s.cachedModels ?? []).some((m) => String((m as { id?: unknown }).id ?? "") === intent.modelId));
+					if (!provider) {
+						emitText(ctx, `Model "${intent.modelId}" is not in any cached catalogue — add or rescan the source first.`, "error");
+						return;
+					}
+					const prefetched = cachedCatalog(provider) ?? { models: [], serverType: provider.serverType ?? "OpenAI-compatible" };
+					const ov = provider.modelOverrides?.[intent.modelId] ?? {};
+					const writeOverride = async (patch: ModelOverride, feedback: string) => {
+						provider.modelOverrides = { ...provider.modelOverrides, [intent.modelId]: { ...ov, ...patch } };
+						app.saveSource(provider);
+						await persistModelOverrideRegister(ctx, provider, prefetched, `${feedback} for "${intent.modelId}"`);
+					};
+					if (intent.field === "vision") {
+						const effInput = ov.input ?? ["text"];
+						const wantImage = intent.value === "on";
+						const nextInput = wantImage ? [...new Set([...effInput, "image"])] : effInput.filter((i) => i !== "image");
+						await writeOverride({ input: nextInput }, `Vision ${wantImage ? "enabled" : "disabled"}`);
+						return;
+					}
+					if (intent.field === "reasoning") {
+						await writeOverride({ reasoning: intent.value === "on" }, `Reasoning ${intent.value === "on" ? "enabled" : "disabled"}`);
+						return;
+					}
+					const n = positiveInt(intent.value);
+					if (n === null) {
+						emitText(ctx, "Value must be a positive whole number.", "error");
+						return;
+					}
+					await writeOverride(intent.field === "maxTokens" ? { maxTokens: n } : { contextWindow: n }, `${intent.field === "maxTokens" ? "Max output tokens" : "Context window"} set to ${fmt(n)}`);
+					return;
+				}
+				case "preset-set": {
+					const provider = app.findSource(intent.source);
+					if (!provider) {
+						emitText(ctx, `Unknown source: ${intent.source}`, "error");
+						return;
+					}
+					const existing = app.profiles(provider, intent.modelId).find((p) => p.slug === intent.slug);
+					const fields = profileToFlat(existing ?? ({ slug: intent.slug } as never));
+					const bool = (raw: string): boolean | undefined => (raw === "on" || raw === "true" ? true : raw === "off" || raw === "false" ? false : undefined);
+					if (intent.field === "enable_thinking" || intent.field === "preserve_thinking") {
+						const b = bool(intent.value);
+						if (b === undefined) {
+							emitText(ctx, `${intent.field} expects on|off.`, "error");
+							return;
+						}
+						fields[intent.field] = String(b);
+					} else if (intent.field === "reasoning_effort") {
+						fields.reasoning_effort = intent.value;
+					} else if ((PRESET_FIELD_ORDER as readonly string[]).includes(intent.field)) {
+						const n = Number(intent.value);
+						if (!Number.isFinite(n)) {
+							emitText(ctx, `${intent.field} expects a number.`, "error");
+							return;
+						}
+						fields[intent.field as keyof typeof fields] = String(n);
+					} else {
+						emitText(ctx, `Unknown preset field: ${intent.field}. Try one of: ${PRESET_FIELD_ORDER.join(", ")}`, "error");
+						return;
+					}
+					const profile = flatToProfile(intent.slug, fields, existing?.exposeAsModel ?? false);
+					const prefetched = cachedCatalog(provider) ?? { models: [], serverType: provider.serverType ?? "OpenAI-compatible" };
+					app.saveProfile(provider, intent.modelId, profile, existing?.slug);
+					const registered = await persistProfileChange(ctx, provider, prefetched);
+					if (registered) {
+						await refreshAdaptiveSelection(ctx, provider, intent.modelId);
+						updateThinkingProfileStatus(ctx);
+						emitText(ctx, `${existing ? "Updated" : "Created"} preset "${intent.slug}" on "${intent.modelId}" (${intent.field}=${intent.value}).`);
+					}
+					return;
+				}
+				case "preset-remove": {
+					const provider = app.findSource(intent.source);
+					if (!provider) {
+						emitText(ctx, `Unknown source: ${intent.source}`, "error");
+						return;
+					}
+					if (!app.profiles(provider, intent.modelId).some((p) => p.slug === intent.slug)) {
+						emitText(ctx, `No preset "${intent.slug}" on "${intent.modelId}".`, "error");
+						return;
+					}
+					if (!intent.confirmed && ctx.mode !== "tui") {
+						emitText(ctx, `Refusing to remove preset "${intent.slug}" without --yes.`, "error");
+						return;
+					}
+					if (!intent.confirmed && !(await ctx.ui.confirm("Delete preset", `Delete preset "${intent.slug}" on "${intent.modelId}"?`))) return;
+					app.removeProfile(provider, intent.modelId, intent.slug);
+					const prefetched = cachedCatalog(provider) ?? { models: [], serverType: provider.serverType ?? "OpenAI-compatible" };
+					const registered = await persistProfileChange(ctx, provider, prefetched);
+					if (registered) {
+						await refreshSelectedProfile(ctx, provider.name, profileModelId(intent.modelId, intent.slug), intent.modelId);
+						await refreshAdaptiveSelection(ctx, provider, intent.modelId);
+						updateThinkingProfileStatus(ctx);
+						emitText(ctx, `Deleted preset "${intent.slug}" on "${intent.modelId}".`);
+					}
+					return;
+				}
+				case "routing-set": {
+					const provider = app.findSource(intent.source);
+					if (!provider) {
+						emitText(ctx, `Unknown source: ${intent.source}`, "error");
+						return;
+					}
+					const LEVELS = THINKING_LEVELS;
+					if (!(LEVELS as readonly string[]).includes(intent.level)) {
+						emitText(ctx, `Unknown routing level: ${intent.level}. Use one of: ${LEVELS.join(", ")}`, "error");
+						return;
+					}
+					const profiles = app.profiles(provider, intent.modelId);
+					if (intent.slug && !profiles.some((p) => p.slug === intent.slug)) {
+						emitText(ctx, `No preset "${intent.slug}" on "${intent.modelId}" — create it first.`, "error");
+						return;
+					}
+					const existing = app.profileRouting(provider, intent.modelId);
+					const routing: ModelProfileRouting = existing
+						? { ...existing, levels: { ...existing.levels, [intent.level]: intent.slug } }
+						: { ...defaultProfileRouting(profiles), levels: { ...defaultProfileRouting(profiles).levels, [intent.level]: intent.slug } };
+					const errors = analyzeExplicitProfileRouting(routing, profiles).errors;
+					if (errors.length) {
+						emitText(ctx, errors[0] ?? "Invalid mapping.", "error");
+						return;
+					}
+					app.saveRouting(provider, intent.modelId, routing);
+					const prefetched = cachedCatalog(provider) ?? { models: [], serverType: provider.serverType ?? "OpenAI-compatible" };
+					const registered = await persistProfileChange(ctx, provider, prefetched);
+					if (registered) {
+						await refreshAdaptiveSelection(ctx, provider, intent.modelId);
+						updateThinkingProfileStatus(ctx);
+						emitText(ctx, `Routing level "${intent.level}" on "${intent.modelId}" → ${intent.slug ? `"${intent.slug}"` : "unmapped"}.`);
+					}
+					return;
+				}
+				case "routing-conventional": {
+					const provider = app.findSource(intent.source);
+					if (!provider) {
+						emitText(ctx, `Unknown source: ${intent.source}`, "error");
+						return;
+					}
+					const profiles = app.profiles(provider, intent.modelId);
+					const off = conventionalPreset(profiles, "off")?.slug ?? "";
+					const low = conventionalPreset(profiles, "low")?.slug ?? "";
+					const medium = conventionalPreset(profiles, "medium")?.slug ?? "";
+					const xhigh = conventionalPreset(profiles, "xhigh")?.slug ?? "";
+					if (!off || !low || !medium || !xhigh) {
+						emitText(ctx, "The four-preset layout needs off/low/medium/xhigh presets — map the levels manually via /discover routing set.", "error");
+						return;
+					}
+					const existing = app.profileRouting(provider, intent.modelId);
+					const routing: ModelProfileRouting = existing
+						? { ...existing, levels: { ...existing.levels, off, minimal: low, low, medium, high: xhigh, xhigh, max: xhigh } }
+						: { ...defaultProfileRouting(profiles), levels: { off, minimal: low, low, medium, high: xhigh, xhigh, max: xhigh } };
+					const errors = analyzeExplicitProfileRouting(routing, profiles).errors;
+					if (errors.length) {
+						emitText(ctx, errors[0] ?? "Invalid mapping.", "error");
+						return;
+					}
+					app.saveRouting(provider, intent.modelId, routing);
+					const prefetched = cachedCatalog(provider) ?? { models: [], serverType: provider.serverType ?? "OpenAI-compatible" };
+					const registered = await persistProfileChange(ctx, provider, prefetched);
+					if (registered) {
+						await refreshAdaptiveSelection(ctx, provider, intent.modelId);
+						updateThinkingProfileStatus(ctx);
+						emitText(ctx, `Four-preset layout mapped on "${intent.modelId}": off=${off}, low/medium=${low}/${medium}, high/xhigh/max=${xhigh}.`);
+					}
+					return;
+				}
+				case "routing-remove": {
+					const provider = app.findSource(intent.source);
+					if (!provider) {
+						emitText(ctx, `Unknown source: ${intent.source}`, "error");
+						return;
+					}
+					const existing = app.profileRouting(provider, intent.modelId);
+					if (!existing) {
+						emitText(ctx, `No adaptive routing on "${intent.modelId}".`, "error");
+						return;
+					}
+					if (!intent.confirmed && ctx.mode !== "tui") {
+						emitText(ctx, `Refusing to remove adaptive routing without --yes.`, "error");
+						return;
+					}
+					if (!intent.confirmed && !(await ctx.ui.confirm("Remove adaptive routing", `Remove adaptive alias "${existing.aliasSlug}" on "${intent.modelId}"? Presets stay.`))) return;
+					app.removeRouting(provider, intent.modelId);
+					const prefetched = cachedCatalog(provider) ?? { models: [], serverType: provider.serverType ?? "OpenAI-compatible" };
+					const registered = await persistProfileChange(ctx, provider, prefetched);
+					if (registered) {
+						await refreshSelectedProfile(ctx, provider.name, profileModelId(intent.modelId, existing.aliasSlug), intent.modelId);
+						updateThinkingProfileStatus(ctx);
+						emitText(ctx, `Removed adaptive routing on "${intent.modelId}".`);
+					}
+					return;
+				}
 				case "invalid":
 					emitText(ctx, `${intent.message}\n${DISCOVER_USAGE}`, "error");
 			}
@@ -2242,6 +2585,40 @@ export default async function (pi: ExtensionAPI) {
 					isError: true,
 				};
 			}
+		},
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		renderCall(args: any, theme: any) {
+			const url = typeof args.url === "string" ? args.url : "?";
+			const name = typeof args.providerName === "string" && args.providerName ? ` as "${args.providerName}"` : "";
+			const text = `→ discover · ${url}${name}`;
+			return new Text(theme?.fg ? theme.fg("accent", text) : text, 0, 0);
+		},
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		renderResult(result: any, options: any, theme: any) {
+			const fg = (kind: string, s: string) => (theme?.fg ? theme.fg(kind, s) : s);
+			const d = (result.details ?? {}) as DiscoverModelsDetails;
+			const text = (result.content ?? []).map((c: { text?: string }) => c.text ?? "").filter(Boolean).join("\n");
+			if (result.isError) {
+				// Authoritative flag only (OPERATIONAL §2.9) — never infer from content.
+				const first = text.split("\n")[0] ?? "failed";
+				const noModels = /no models/i.test(first);
+				const glyph = noModels ? "⊘" : "✗";
+				const word = noModels ? "online · no models" : "failed";
+				const lines = [fg(noModels ? "warning" : "error", `discover ${glyph} ${word}`), fg("muted", `  ${first.slice(0, 120)}`)];
+				lines.push(fg("muted", "  next: check the URL/server, or run /discover → Add provider for an interactive probe"));
+				return new Text(lines.join("\n"), 0, 0);
+			}
+			if (!d.providerName) return new Text(text || "(no output)", 0, 0);
+			const bits = [`discover ✓ registered`, `"${d.providerName}"`, d.serverType ?? "?", `${d.modelCount ?? 0} model(s)`];
+			if (d.profileCount) bits.push(`+${d.profileCount} preset(s)`);
+			const lines = [fg("success", bits.join(" · "))];
+			const note = text.split("\n").find((l: string) => /unreported/i.test(l));
+			if (note) lines.push(fg("warning", `  ${note.trim().slice(0, 120)}`));
+			if (options?.expanded) {
+				for (const l of text.split("\n").slice(0, 12)) lines.push(fg("muted", `  ${l}`));
+			}
+			lines.push(fg("muted", "  next: select a model via /model · tune values via /discover"));
+			return new Text(lines.join("\n"), 0, 0);
 		},
 	});
 }

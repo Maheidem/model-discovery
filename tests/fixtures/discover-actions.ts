@@ -63,30 +63,30 @@ export const DISCOVER_ACTIONS: readonly DiscoverAction[] = [
 	{ key: "help", verb: "help", appMethod: "" },
 
 	// --- Sources (add/remove dual-pathed today; rename/auth/defaults TUI-only) ---
-	{ key: "source:<name>", verb: "", appMethod: "findSource" },
+	{ key: "source:<name>", verb: "source open <name>", appMethod: "findSource" },
 	{ key: "source:add", verb: "source add <url>", appMethod: "saveSource" },
 	{ key: "source:remove", verb: "source remove <name> --yes", appMethod: "removeSource" },
-	{ key: "source:rename", verb: "", appMethod: "renameSource" },
-	{ key: "source:credential", verb: "", appMethod: "setCredential" },
-	{ key: "source:defaults", verb: "", appMethod: "saveSource" },
-	{ key: "source:<name>:rescan", verb: "", appMethod: "saveSource" },
+	{ key: "source:rename", verb: "source rename <name> <new>", appMethod: "renameSource" },
+	{ key: "source:credential", verb: "source auth <name> --key-from-env API_KEY", appMethod: "setCredential" },
+	{ key: "source:defaults", verb: "source defaults <name> ctx <n>", appMethod: "saveSource" },
+	{ key: "source:<name>:rescan", verb: "source rescan <name>", appMethod: "saveSource" },
 
 	// --- Per-model overrides (index.ts:1328/1369/1616 mutation paths) ---
-	{ key: "model:<id>:vision", verb: "", appMethod: "saveSource" },
-	{ key: "model:<id>:contextWindow", verb: "", appMethod: "saveSource" },
-	{ key: "model:<id>:maxTokens", verb: "", appMethod: "saveSource" },
+	{ key: "model:<id>:vision", verb: "model <id> vision on", appMethod: "saveSource" },
+	{ key: "model:<id>:contextWindow", verb: "model <id> ctx <n>", appMethod: "saveSource" },
+	{ key: "model:<id>:maxTokens", verb: "model <id> max <n>", appMethod: "saveSource" },
 
 	// --- Presets CRUD (index.ts:1103/1243/1262) ---
 	{ key: "presets", verb: "", appMethod: "profiles" },
 	{ key: "preset:<modelId>:<slug>", verb: "", appMethod: "saveProfile" },
-	{ key: "preset:<modelId>:<slug>:<field>", verb: "", appMethod: "saveProfile" },
-	{ key: "preset:<modelId>:<slug>:remove", verb: "", appMethod: "removeProfile" },
+	{ key: "preset:<modelId>:<slug>:<field>", verb: "preset set <name> <modelId> <slug> <field> <n>", appMethod: "saveProfile" },
+	{ key: "preset:<modelId>:<slug>:remove", verb: "preset remove <name> <modelId> <slug> --yes", appMethod: "removeProfile" },
 
 	// --- Adaptive routing (index.ts:994/1164/1165) ---
 	{ key: "routing", verb: "", appMethod: "profileRouting" },
-	{ key: "routing:<modelId>:level:<level>", verb: "", appMethod: "saveRouting" },
-	{ key: "routing:<modelId>:conventional", verb: "", appMethod: "saveRouting" },
-	{ key: "routing:<modelId>:remove", verb: "", appMethod: "removeRouting" },
+	{ key: "routing:<modelId>:level:<level>", verb: "routing set <name> <modelId> <level> <slug>", appMethod: "saveRouting" },
+	{ key: "routing:<modelId>:conventional", verb: "routing conventional <name> <modelId>", appMethod: "saveRouting" },
+	{ key: "routing:<modelId>:remove", verb: "routing remove <name> <modelId> --yes", appMethod: "removeRouting" },
 ];
 
 /**

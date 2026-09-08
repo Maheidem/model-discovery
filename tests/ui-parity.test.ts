@@ -52,6 +52,7 @@ const SAMPLES: Record<string, string> = {
 	"<name>": "parity-source",
 	"<id>": "qwen3-32b",
 	"<modelId>": "qwen3-32b",
+	"<new>": "renamed-source",
 	"<slug>": "thinking",
 	"<field>": "temperature",
 	"<level>": "core",

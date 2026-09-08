@@ -76,9 +76,57 @@ test("adapter registers one discover command and preserves the discover_models t
 	const h = harness();
 	await extension(h.api);
 	assert.deepEqual([...h.commands.keys()], ["discover"]);
-	assert.deepEqual(h.tools.map((tool) => tool.name), ["discover_models"]);
+	assert.deepEqual(h.tools.map((tool) => (tool as unknown as { name: string }).name), ["discover_models"]);
 	assert.ok(h.events.includes("session_start"));
 	assert.ok(h.events.includes("before_provider_request"));
+});
+
+test("discover_models renders neutral per-state cards (slice 2)", async () => {
+	const h = harness();
+	await extension(h.api);
+	const tool = h.tools[0] as unknown as {
+		renderCall?: (args: unknown, theme: unknown) => { render(width: number): string[] };
+		renderResult?: (result: unknown, options: unknown, theme: unknown) => { render(width: number): string[] };
+	};
+	const theme = { fg: (_c: string, s: string) => s };
+	assert.equal(typeof tool.renderCall, "function");
+	assert.equal(typeof tool.renderResult, "function");
+
+	const call = tool.renderCall!({ url: "http://127.0.0.1:8123/v1", providerName: "omx" }, theme).render(80).join("\n");
+	assert.match(call, /discover · http:\/\/127\.0\.0\.1:8123\/v1 as "omx"/);
+
+	const ok = tool.renderResult!(
+		{ content: [{ text: "ok" }], details: { providerName: "omx", serverType: "oMLX", modelCount: 4, profileCount: 2 } },
+		{},
+		theme,
+	).render(120).join("\n");
+	assert.match(ok, /discover ✓ registered · "omx" · oMLX · 4 model\(s\) · \+2 preset\(s\)/);
+	assert.match(ok, /next: select a model via \/model/);
+
+	const failed = tool.renderResult!(
+		{ content: [{ text: "Endpoint unavailable or registration failed: connection refused" }], details: {}, isError: true },
+		{},
+		theme,
+	).render(120).join("\n");
+	assert.match(failed, /discover ✗ failed/);
+	assert.match(failed, /next: check the URL/);
+
+	const noModels = tool.renderResult!(
+		{ content: [{ text: "Endpoint online but reports no models." }], details: {}, isError: true },
+		{},
+		theme,
+	).render(120).join("\n");
+	assert.match(noModels, /discover ⊘ online · no models/);
+	assert.doesNotMatch(noModels, /✗/);
+
+	// Success that merely MENTIONS error must never render the failure card (OPERATIONAL §2.9).
+	const mentions = tool.renderResult!(
+		{ content: [{ text: "registered; if you see error, rerun" }], details: { providerName: "x", modelCount: 1 } },
+		{},
+		theme,
+	).render(120).join("\n");
+	assert.match(mentions, /discover ✓ registered/);
+	assert.doesNotMatch(mentions, /✗/);
 });
 
 test("bare TUI command opens the canonical fixed-height home panel (slice 1a)", async () => {
