@@ -17,7 +17,6 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { BorderedLoader } from "@earendil-works/pi-coding-agent";
 import type { SelectItem } from "@earendil-works/pi-tui";
-import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
 	analyzeExplicitProfileRouting,
@@ -101,6 +100,7 @@ import { buildAdvancedSnapshot } from "./ui/advanced-panel.ts";
 import { SecretField } from "./ui/secret-field.ts";
 import { PAGE_NEXT_KEY, PAGE_PREV_KEY } from "./ui/panel-frame.ts";
 import { SettingsPanel, type PanelActionResult, type PanelResult } from "./ui/settings-panel.ts";
+import { renderToolCallCard, renderToolPlainCard, renderToolResultCard, type ToolCardLine } from "./ui/tool-card.ts";
 import { buildHomeSnapshot, formatAge, type HomeSnapshotInput, type HomeSourceInput } from "./ui/home.ts";
 import { modelDiscoveryVersion } from "./version.ts";
 
@@ -2663,35 +2663,40 @@ export default async function (pi: ExtensionAPI) {
 		renderCall(args: any, theme: any) {
 			const url = typeof args.url === "string" ? args.url : "?";
 			const name = typeof args.providerName === "string" && args.providerName ? ` as "${args.providerName}"` : "";
-			const text = `→ discover · ${url}${name}`;
-			return new Text(theme?.fg ? theme.fg("accent", text) : text, 0, 0);
+			return renderToolCallCard(theme, { title: "discover", subject: url, qualifier: name });
 		},
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		renderResult(result: any, options: any, theme: any) {
-			const fg = (kind: string, s: string) => (theme?.fg ? theme.fg(kind, s) : s);
 			const d = (result.details ?? {}) as DiscoverModelsDetails;
 			const text = (result.content ?? []).map((c: { text?: string }) => c.text ?? "").filter(Boolean).join("\n");
 			if (result.isError) {
 				// Authoritative flag only (OPERATIONAL §2.9) — never infer from content.
 				const first = text.split("\n")[0] ?? "failed";
 				const noModels = /no models/i.test(first);
-				const glyph = noModels ? "⊘" : "✗";
-				const word = noModels ? "online · no models" : "failed";
-				const lines = [fg(noModels ? "warning" : "error", `discover ${glyph} ${word}`), fg("muted", `  ${first.slice(0, 120)}`)];
-				lines.push(fg("muted", "  next: check the URL/server, or run /discover → Add provider for an interactive probe"));
-				return new Text(lines.join("\n"), 0, 0);
+				return renderToolResultCard(theme, {
+					lead: "discover",
+					state: noModels ? "no-models" : "failed",
+					detailLines: [{ text: `  ${first.slice(0, 120)}` }],
+					nextLine: "  next: check the URL/server, or run /discover → Add provider for an interactive probe",
+				});
 			}
-			if (!d.providerName) return new Text(text || "(no output)", 0, 0);
-			const bits = [`discover ✓ registered`, `"${d.providerName}"`, d.serverType ?? "?", `${d.modelCount ?? 0} model(s)`];
+			if (!d.providerName) return renderToolPlainCard(text);
+			const bits = [`"${d.providerName}"`, d.serverType ?? "?", `${d.modelCount ?? 0} model(s)`];
 			if (d.profileCount) bits.push(`+${d.profileCount} preset(s)`);
-			const lines = [fg("success", bits.join(" · "))];
+			const detailLines: ToolCardLine[] = [];
 			const note = text.split("\n").find((l: string) => /unreported/i.test(l));
-			if (note) lines.push(fg("warning", `  ${note.trim().slice(0, 120)}`));
+			if (note) detailLines.push({ text: `  ${note.trim().slice(0, 120)}`, kind: "warning" });
 			if (options?.expanded) {
-				for (const l of text.split("\n").slice(0, 12)) lines.push(fg("muted", `  ${l}`));
+				for (const l of text.split("\n").slice(0, 12)) detailLines.push({ text: `  ${l}` });
 			}
-			lines.push(fg("muted", "  next: select a model via /model · tune values via /discover"));
-			return new Text(lines.join("\n"), 0, 0);
+			return renderToolResultCard(theme, {
+				lead: "discover",
+				state: "registered",
+				stateBits: bits,
+				bitJoiner: " · ",
+				detailLines,
+				nextLine: "  next: select a model via /model · tune values via /discover",
+			});
 		},
 	});
 }
