@@ -1,23 +1,39 @@
 # Vendored control-panel primitives — model-discovery
 
-Slice 0 governance (`.planning/ui-alignment-2026-09-08`). Copied with `cp`,
+Slice 0 governance (`.planning/ui-alignment-2026-09-08`), refreshed for the
+pi-panel-kit Stage 1 canonical set (2026-09-09). Copied with `cp`,
 **no edits after copy**; guard:
-`node skills/pi-extension-builder/scripts/check-vendored.mjs` (all three
-targets registered with `required: true`). Never hand-edit a vendored copy —
-edit the canonical kit source, then `--fix`.
+`node skills/pi-extension-builder/scripts/check-vendored.mjs` (every target
+registered with `required: true`; the workspace-wide guard covers 16
+artifacts across the four consumers, 8 of them here). Never hand-edit a
+vendored copy — edit the canonical kit source, then `--fix`.
 
 | file (custom-extensions/model-discovery/ui/) | sha256-12 (vendored) | sha256-12 (canonical kit) | byte-identical |
 | --- | --- | --- | --- |
 | settings-panel.ts | 56e85081c806 | 56e85081c806 | yes |
 | panel-model.ts    | 22646e1e8a60 | 22646e1e8a60 | yes |
 | format.ts         | c389bb9be0dd | c389bb9be0dd | yes |
+| tool-card.ts      | 119eb8d5ca2f | 119eb8d5ca2f | yes |
+| version.ts        | a4c42c5ef1c1 | a4c42c5ef1c1 | yes |
+| panel-frame.ts    | 6235e7b578ea | 6235e7b578ea | yes |
+| secret-field.ts   | 15a5765b5f10 | 15a5765b5f10 | yes |
+| report-panel.ts   | efa26d1ac473 | efa26d1ac473 | yes |
 
 Canonical source: `skills/pi-extension-builder/assets/control-panel/extensions/ui/`.
 
+Row provenance: settings-panel / panel-model / format from slice 0 (2026-09-08);
+tool-card + version adopted in kit S1/S2 (repo commits 66749b3, 1adf664);
+panel-frame / secret-field / report-panel promoted in kit S0 (delegate joined
+panel-frame in S3).
+
 ## Import deviations
 
-**None.** No import specifier was changed — all three copies are byte-identical
-to the canonical sources (verified by `cmp` and by `tests/ui-parity.test.ts`).
+**None.** No import specifier was changed — all copies are byte-identical
+to the canonical sources (verified by `cmp`, by `tests/ui-parity.test.ts`
+(settings-panel/panel-model/format) and by the workspace drift guard (all 8)).
+`version.ts` here is the canonical helper; the public `modelDiscoveryVersion()`
+wrapper lives in the repo root `version.ts` and passes this package's own
+`package.json` path, so every import and output string is unchanged.
 
 ## Recorded deviation: compile-graph exclusion (NOT a content deviation)
 
@@ -32,13 +48,13 @@ ui/panel-model.ts(3,33): error TS2307: Cannot find module '../metadata.ts'
 ```
 
 Chosen fix (keeps byte-identity): `tsconfig.json` excludes `ui/panel-model.ts`
-from the compile graph until **slice 1** replaces it with the model-discovery
-panel model (`dashboardSnapshot` over `buildHomeSummary`/`buildHomeItems`).
-Nothing imports the file yet, so behavior is unchanged and byte-identity — not
-typechecking — is the active guard. The rejected alternative (rewriting the
-import specifiers) would have required fabricating `config.ts` / `metadata.ts`
-and an `ExtensionController` with delegate-shaped `enabled` / `mode` /
-`itemLimit` / `thresholdBytes` settings that model-discovery does not have.
+from the compile graph until the model-discovery panel model is adapted onto
+it. Nothing imports the file yet, so behavior is unchanged and byte-identity —
+not typechecking — is the active guard. The rejected alternative (rewriting
+the import specifiers) would have required fabricating `config.ts` /
+`metadata.ts` and an `ExtensionController` with delegate-shaped `enabled` /
+`mode` / `itemLimit` / `thresholdBytes` settings that model-discovery does
+not have.
 
-`ui/settings-panel.ts` and `ui/format.ts` typecheck normally (external
-peer-deps and zero imports respectively).
+The other seven vendored files typecheck normally (external peer-deps, zero
+cross-file imports, or thin wrappers in this repo's own sources).
