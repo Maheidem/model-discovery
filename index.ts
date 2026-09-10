@@ -2061,7 +2061,7 @@ export default async function (pi: ExtensionAPI) {
 
 	async function showReport(ctx: ExtensionCommandContext, title: string, text: string): Promise<void> {
 		if (ctx.mode !== "tui") {
-			emitText(ctx, text);
+			emitText(ctx, `Model Discovery v${modelDiscoveryVersion()}\n${text}`);
 			return;
 		}
 		const lines = text.split("\n");
@@ -2222,8 +2222,8 @@ export default async function (pi: ExtensionAPI) {
 					lines.push(
 						"",
 						"Actions",
-						"- Re-scan from the wizard to refresh live catalogues.",
-						"- Authentication secrets are configured only through the masked TUI.",
+						"- Re-scan from the /discover panel to refresh live catalogues.",
+						"- Authentication secrets are configured only through the masked panel.",
 					);
 					await showReport(ctx, "Model Discovery diagnostics", lines.join("\n"));
 					return;
@@ -2612,6 +2612,12 @@ export default async function (pi: ExtensionAPI) {
 		description:
 			"Discover and register models from an OpenAI-compatible endpoint (llama.cpp, oMLX, Ollama, vLLM). Reads actual server config. Use when the user asks to add a local model server.",
 		parameters: discoverModelsParameters,
+		promptGuidelines: [
+			"Use discover_models when the user wants to scan a local or remote OpenAI-compatible endpoint (llama.cpp, oMLX, Ollama, vLLM) and register its models as a provider.",
+			"Scanning is read-only against the endpoint: it reads live server config to build model entries. Registering makes models selectable, it does not change defaults or routing.",
+			"Results render as state cards in the TUI; models become selectable via /model after registration.",
+			"Change routing, profiles, and presets via the /discover panel's nested verbs (status, doctor, route) rather than re-scanning.",
+		],
 		async execute(_toolCallId, params) {
 			let result: Awaited<ReturnType<typeof discoverAndRegisterSource>>;
 			try {
