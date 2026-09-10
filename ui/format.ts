@@ -103,6 +103,8 @@ export function stateGlyph(state: string): { glyph: string; word: string; color:
 			return { glyph: "⏱", word: "timeout · hard", color: "warning" };
 		case "queued":
 			return { glyph: "○", word: "queued", color: "muted" };
+		case "spawned":
+			return { glyph: "↗", word: "spawned", color: "muted" };
 		default:
 			return { glyph: "✗", word: state || "unknown", color: "error" };
 	}

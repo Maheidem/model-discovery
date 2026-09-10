@@ -4,6 +4,7 @@
   "type": "module",
   "description": "Interactive Pi wizard for discovering local AI endpoints and defining named thinking/sampling profiles.",
   "license": "MIT",
+  "author": "maheidem",
   "keywords": [
     "pi-package",
     "extension",
@@ -15,9 +16,17 @@
     "ollama",
     "vllm"
   ],
-  "homepage": "https://github.com/Maheidem/model-discovery",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Maheidem/pi-coder-management.git",
+    "directory": "custom-extensions/model-discovery"
+  },
+  "homepage": "https://github.com/Maheidem/pi-coder-management/tree/main/custom-extensions/model-discovery#readme",
   "bugs": {
-    "url": "https://github.com/maheidem/model-discovery/issues"
+    "url": "https://github.com/Maheidem/pi-coder-management/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "files": [
     "index.ts",
