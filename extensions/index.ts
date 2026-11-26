@@ -53,6 +53,7 @@ import {
 } from "./schema-repair.ts";
 import { createDiscoveryApplication } from "./application.ts";
 import { CONFIG_PATH } from "./config.ts";
+import { COMMAND_NAME } from "./metadata.ts";
 import { completeDiscoverArgs, DISCOVER_USAGE, parseDiscoverArgs } from "./commands.ts";
 import {
 	errorMessage,
@@ -2210,7 +2211,7 @@ export default async function (pi: ExtensionAPI) {
 		}
 	}
 
-	pi.registerCommand("discover", {
+	pi.registerCommand(COMMAND_NAME, {
 		description: "Open model-source discovery or inspect it with /discover status",
 		getArgumentCompletions: (prefix) => completeDiscoverArgs(
 			prefix,
