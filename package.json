@@ -18,12 +18,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Maheidem/pi-coder-management.git",
-    "directory": "custom-extensions/model-discovery"
+    "url": "git+https://github.com/Maheidem/model-discovery.git"
   },
-  "homepage": "https://github.com/Maheidem/pi-coder-management/tree/main/custom-extensions/model-discovery#readme",
+  "homepage": "https://github.com/Maheidem/model-discovery#readme",
   "bugs": {
-    "url": "https://github.com/Maheidem/pi-coder-management/issues"
+    "url": "https://github.com/Maheidem/model-discovery/issues"
   },
   "publishConfig": {
     "access": "public"
@@ -49,15 +48,18 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.84.4",
-    "@earendil-works/pi-tui": "^0.84.4",
+    "@earendil-works/pi-coding-agent": "1.6.1",
+    "@earendil-works/pi-tui": "1.6.1",
     "@types/node": "^22.0.0",
-    "typebox": "^1.0.17",
+    "typebox": "1.3.27",
     "typescript": "^5.9.3"
   },
   "pi": {
     "extensions": [
       "./extensions/index.ts"
     ]
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
