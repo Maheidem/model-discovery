@@ -3,8 +3,8 @@
  *
  * One inventory (`tests/fixtures/discover-actions.ts`) is asserted to be the
  * single source joining panel row keys ⇄ nested `/discover` verbs ⇄
- * `DiscoveryApplication` methods, plus byte-identity of the vendored UI
- * primitives and the loaded-version provenance line.
+ * `DiscoveryApplication` methods, plus the absence of local kit copies
+ * and the loaded-version provenance line.
  *
  * ZERO behavior change: nothing here imports `index.ts`, opens UI, touches the
  * network, or writes storage. The application is exercised against an
@@ -28,7 +28,6 @@
  */
 
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -205,16 +204,11 @@ test("every inventory key is an implemented panel row or a shrinking pending key
 	);
 });
 
-test("vendored ui primitives are byte-identical to the canonical kit", () => {
-	const kit = resolve(packageRoot, "../../skills/pi-extension-builder/assets/control-panel/extensions/ui");
-	const files = ["settings-panel.ts", "panel-model.ts", "format.ts"];
-	if (!existsSync(kit)) return; // published tarball: the kit is not shipped, nothing to compare
-	const digest = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex").slice(0, 12);
+test("no copy of a kit ui primitive is left in extensions/ui", () => {
+	// The primitives come from @maheidem/pi-panel-kit. A local copy can drift from the kit.
+	const files = ["settings-panel.ts", "panel-frame.ts", "report-panel.ts", "secret-field.ts", "tool-card.ts", "format.ts", "version.ts", "panel-model.ts"];
 	for (const file of files) {
-		const canonical = join(kit, file);
-		const vendored = join(packageRoot, "ui", file);
-		assert.ok(existsSync(vendored), `vendored copy missing: ui/${file}`);
-		assert.equal(digest(vendored), digest(canonical), `ui/${file} drifted from the canonical kit source`);
+		assert.ok(!existsSync(join(packageRoot, "extensions", "ui", file)), `kit copy found: extensions/ui/${file}`);
 	}
 });
 

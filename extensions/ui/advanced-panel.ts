@@ -10,9 +10,7 @@
  * Fixed frame (`ADVANCED_PANEL_ROWS`) so the composer never moves; sources
  * window through the shared `pageRows` controls and never grow the frame.
  */
-import { pageRows, padToFrame } from "./panel-frame.ts";
-import { BACK_KEY } from "./endpoint-panel.ts";
-import type { PanelRow, PanelShortcut, PanelSnapshot } from "./settings-panel.ts";
+import { BACK_KEY, pageRows, padToFrame, type PanelRow, type PanelShortcut, type PanelSnapshot } from "@maheidem/pi-panel-kit";
 
 /** Fixed frame height — advanced config hub. */
 export const ADVANCED_PANEL_ROWS = 23;

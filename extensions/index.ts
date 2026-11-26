@@ -71,7 +71,6 @@ import {
 	sourceAvailability,
 } from "./ui-model.ts";
 import {
-	BACK_KEY,
 	buildEndpointSnapshot,
 	buildModelPickerSnapshot,
 	buildModelSnapshot,
@@ -95,12 +94,21 @@ import {
 	buildAddModelSnapshot,
 	buildAddSnapshot,
 } from "./ui/add-panel.ts";
-import { buildReportSnapshot } from "./ui/report-panel.ts";
+import {
+	BACK_KEY,
+	buildReportSnapshot,
+	PAGE_NEXT_KEY,
+	PAGE_PREV_KEY,
+	renderToolCallCard,
+	renderToolPlainCard,
+	renderToolResultCard,
+	SecretField,
+	SettingsPanel,
+	type PanelActionResult,
+	type PanelResult,
+	type ToolCardLine,
+} from "@maheidem/pi-panel-kit";
 import { buildAdvancedSnapshot } from "./ui/advanced-panel.ts";
-import { SecretField } from "./ui/secret-field.ts";
-import { PAGE_NEXT_KEY, PAGE_PREV_KEY } from "./ui/panel-frame.ts";
-import { SettingsPanel, type PanelActionResult, type PanelResult } from "./ui/settings-panel.ts";
-import { renderToolCallCard, renderToolPlainCard, renderToolResultCard, type ToolCardLine } from "./ui/tool-card.ts";
 import { buildHomeSnapshot, formatAge, type HomeSnapshotInput, type HomeSourceInput } from "./ui/home.ts";
 import { modelDiscoveryVersion } from "./version.ts";
 

@@ -7,7 +7,7 @@
  * panel with two stages that share the same frame budget:
  *
  *   form    — URL input row, optional name row, optional API key row (masked,
- *             opens `ui/secret-field.ts`), fallback defaults, `Connect + probe`.
+ *             opens the kit `SecretField`), fallback defaults, `Connect + probe`.
  *   review  — what the server actually reported, per model; edit a model or a
  *             fallback, then `Register` (one `BorderedLoader` connect step).
  *
@@ -16,13 +16,11 @@
  * and every stage is testable without a TTY.
  *
  * SECRETS: the key row renders `•••• configured` / `enter a key` and never the
- * value; the value is typed in `ui/secret-field.ts` and handed to the host,
+ * value; the value is typed in the kit `SecretField` and handed to the host,
  * because a panel `input` row echoes what you type.
  */
 
-import { pageRows, padToFrame } from "./panel-frame.ts";
-import { BACK_KEY } from "./endpoint-panel.ts";
-import type { PanelRow, PanelShortcut, PanelSnapshot } from "./settings-panel.ts";
+import { BACK_KEY, pageRows, padToFrame, type PanelRow, type PanelShortcut, type PanelSnapshot } from "@maheidem/pi-panel-kit";
 
 /** Fixed frame height — the form and the review stage both render this tall. */
 export const ADD_PANEL_ROWS = 23;

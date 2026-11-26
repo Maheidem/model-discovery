@@ -16,7 +16,7 @@
  *   • destructive rows are ARM-THEN-CONFIRM and always NAME the affected
  *     object (source name / preset slug / model id) — never a bare "remove";
  *   • secrets render as `configured`/`anonymous`/`••••`, never as a value, and
- *     are typed only in `ui/secret-field.ts` (a panel `input` row echoes).
+ *     are typed only in the kit `SecretField` (a panel `input` row echoes).
  *
  * ROW KEY GRAMMAR (mirrors `tests/fixtures/discover-actions.ts`; `<…>` is
  * substituted at render):
@@ -46,8 +46,7 @@
  */
 
 import { formatAge } from "./home.ts";
-import { pageRows, padToFrame, type RowPage } from "./panel-frame.ts";
-import type { PanelRow, PanelShortcut, PanelSnapshot, PanelValueStyle } from "./settings-panel.ts";
+import { BACK_KEY, pageRows, padToFrame, type PanelRow, type PanelShortcut, type PanelSnapshot, type PanelValueStyle, type RowPage } from "@maheidem/pi-panel-kit";
 
 /** Fixed frame height — source detail. */
 export const ENDPOINT_PANEL_ROWS = 23;
@@ -63,9 +62,6 @@ export const PRESETS_PANEL_ROWS = 23;
 export const PRESET_PANEL_ROWS = 23;
 /** Fixed frame height — adaptive routing editor. */
 export const ROUTING_PANEL_ROWS = 23;
-
-/** Key of the "return to the parent surface" row on every secondary panel. */
-export const BACK_KEY = "back";
 
 /** A rendered snapshot plus the window facts the host needs to page it. */
 export interface BuiltPanel {

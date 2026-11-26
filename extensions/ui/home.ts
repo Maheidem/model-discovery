@@ -7,7 +7,7 @@
  * TTY and without touching `$HOME`.
  *
  * ---------------------------------------------------------------------------
- * RENDER CONTRACT (copied from the vendored panel, `ui/settings-panel.ts`
+ * RENDER CONTRACT (copied from the kit panel, `SettingsPanel` of `@maheidem/pi-panel-kit`
  * `render()` — the frame height is the SUM of these blocks, in this order):
  *
  *   1  top border                       `╭─ Model Discovery ─…╮`
@@ -40,7 +40,7 @@
  * deliberately NOT advertised here; their rows stay selectable.
  */
 
-import type { PanelRow, PanelSection, PanelShortcut, PanelSnapshot, PanelValueStyle } from "./settings-panel.ts";
+import type { PanelRow, PanelSection, PanelShortcut, PanelSnapshot, PanelValueStyle } from "@maheidem/pi-panel-kit";
 
 /** Fixed frame height for the home dashboard (rows, including both borders). */
 export const HOME_PANEL_ROWS = 23;

@@ -8,17 +8,16 @@
  * the version actually executing, so "stale copy in this process" is
  * self-evident instead of mysterious.
  *
- * Thin wrapper (S2) over the canonical helper vendored at `ui/version.ts`
- * (kit source: `skills/pi-extension-builder/assets/control-panel/…`),
- * mirroring `custom-extensions/delegate/version.ts`: read once from the
- * `package.json` beside this module, cached, never hard-coded — public name
- * and return string unchanged.
+ * Thin wrapper over `extensionVersion` of `@maheidem/pi-panel-kit`.
+ * It reads the `package.json` one folder up from this module (the package
+ * root), once, cached, never hard-coded. The public name and the return
+ * string do not change.
  */
 
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { extensionVersion } from "./ui/version.ts";
+import { extensionVersion } from "@maheidem/pi-panel-kit";
 
 export function modelDiscoveryVersion(): string {
 	return extensionVersion({
