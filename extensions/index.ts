@@ -1502,8 +1502,7 @@ export default async function (pi: ExtensionAPI) {
 							if (draft.isNew) return { kind: "close", action: "back" };
 							if (!armed.has(key)) {
 								armed.add(key);
-								// Split literal: the kit tarball test reads `from "<x>"` in one literal as an import.
-								return { kind: "updated", message: `Press enter again to remove "${draft.handle}" from ` + `"${config.id}".` };
+								return { kind: "updated", message: `Press enter again to remove "${draft.handle}" from "${config.id}".` };
 							}
 							return { kind: "close", action: "remove" };
 						}
