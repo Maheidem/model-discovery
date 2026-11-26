@@ -77,8 +77,8 @@ The same root command has a scriptable surface. Bare `/discover` prints status o
 /discover doctor
 /discover paths
 /discover source list
-/discover source add http://192.168.1.100:8080
-/discover source add http://192.168.1.100:8080 --name my-llama
+/discover source add http://10.0.0.2:8080
+/discover source add http://10.0.0.2:8080 --name my-llama
 /discover source remove my-llama --yes
 /discover rescan-all
 /discover source rename my-llama llama-box
@@ -98,7 +98,7 @@ The same root command has a scriptable surface. Bare `/discover` prints status o
 The original direct-add shorthand remains compatible:
 
 ```text
-/discover http://192.168.1.100:8080
+/discover http://10.0.0.2:8080
 ```
 
 In TUI mode, add commands enter the full enrollment flow (form → probe → review → register). Outside TUI, source add probes and registers an anonymous source using server-reported/default values. Credentials are configured through the masked panel field or `--key-from-env` — never as inline arguments. Destructive commands require confirmation in TUI and explicit `--yes` outside TUI.
@@ -108,7 +108,7 @@ Enrollment explicitly asks whether the source is anonymous or requires an API ke
 The LLM-callable tool remains available:
 
 ```text
-discover_models(url="http://192.168.1.100:8080", providerName="my-llama")
+discover_models(url="http://10.0.0.2:8080", providerName="my-llama")
 ```
 
 The tool also accepts `apiKey`, but literal tool arguments may be retained in the agent session. Prefer the masked `/discover` flow for secrets.
