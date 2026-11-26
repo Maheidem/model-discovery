@@ -5,6 +5,7 @@ import test from "node:test";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import extension from "../extensions/index.ts";
 import { STORAGE_PATH, type DiscoveredProvider } from "../extensions/storage.ts";
+import { CONFIG_PATH } from "../extensions/config.ts";
 import { HOME_PANEL_ROWS } from "../extensions/ui/home.ts";
 import { modelDiscoveryVersion } from "../extensions/version.ts";
 
@@ -202,6 +203,8 @@ test("paths and help are protocol-safe outside TUI", async () => {
 	assert.ok(command);
 	const paths = await captureConsole(async () => { await command.handler("paths", context("print")); });
 	assert.match(paths, /\.pi\/agent\/model-discovery\.json/);
+	assert.ok(paths.includes(CONFIG_PATH), "paths prints CONFIG_PATH");
+	assert.equal(CONFIG_PATH, STORAGE_PATH);
 	const help = await captureConsole(async () => { await command.handler("help", context("print")); });
 	assert.match(help, /\/discover doctor/);
 });

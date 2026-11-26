@@ -52,13 +52,13 @@ import {
 	type ToolSchemaRepairReport,
 } from "./schema-repair.ts";
 import { createDiscoveryApplication } from "./application.ts";
+import { CONFIG_PATH } from "./config.ts";
 import { completeDiscoverArgs, DISCOVER_USAGE, parseDiscoverArgs } from "./commands.ts";
 import {
 	errorMessage,
 	getStorageDiagnostic,
 	recordFailedScan,
 	recordSuccessfulScan,
-	STORAGE_PATH,
 	STORAGE_PATH_DISPLAY,
 	type DiscoveredProvider,
 	type ModelOverride,
@@ -893,7 +893,7 @@ export default async function (pi: ExtensionAPI) {
 				continue;
 			}
 			if (action === "paths") {
-				await showReport(ctx, "Model Discovery paths", `Configuration: ${STORAGE_PATH}`);
+				await showReport(ctx, "Model Discovery paths", `Configuration: ${CONFIG_PATH}`);
 				continue;
 			}
 			if (action === "help-verbs") {
@@ -2166,7 +2166,7 @@ export default async function (pi: ExtensionAPI) {
 				continue;
 			}
 			if (action === "paths") {
-				await showReport(ctx, "Model Discovery paths", `Configuration: ${STORAGE_PATH}`);
+				await showReport(ctx, "Model Discovery paths", `Configuration: ${CONFIG_PATH}`);
 				continue;
 			}
 			if (action === "help") {
@@ -2237,7 +2237,7 @@ export default async function (pi: ExtensionAPI) {
 					return;
 				}
 				case "paths":
-					await showReport(ctx, "Model Discovery paths", `Configuration: ${STORAGE_PATH}`);
+					await showReport(ctx, "Model Discovery paths", `Configuration: ${CONFIG_PATH}`);
 					return;
 				case "help":
 					await showReport(ctx, "Model Discovery help", DISCOVER_USAGE);

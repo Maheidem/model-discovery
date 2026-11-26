@@ -1,12 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import {
 	migrateLegacyProfileRouting,
 	validateModelProfile,
 	type ModelProfile,
 	type ModelProfileRouting,
 } from "./profiles.ts";
+import { CONFIG_PATH } from "./config.ts";
 import { redactSecret } from "./providers.ts";
 
 export interface ModelOverride {
@@ -47,7 +48,8 @@ export interface StorageDiagnostic {
 	preservedPath?: string;
 }
 
-export const STORAGE_PATH = join(os.homedir(), ".pi", "agent", "model-discovery.json");
+/** The config file. It is the same path as `CONFIG_PATH` of `config.ts`. */
+export const STORAGE_PATH = CONFIG_PATH;
 
 /** Home-relative form of STORAGE_PATH for UI display (`~/.pi/...`). */
 export const STORAGE_PATH_DISPLAY = STORAGE_PATH.startsWith(os.homedir())
