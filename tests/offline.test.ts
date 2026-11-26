@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-const extensionPath = fileURLToPath(new URL("./index.ts", import.meta.url));
+const extensionPath = fileURLToPath(new URL("../extensions/index.ts", import.meta.url));
 const model = { id: "Qwen3.8-27B", owned_by: "omlx", context_window: 262144, max_tokens: 32768 };
 
 type ProviderFixture = Record<string, unknown>;

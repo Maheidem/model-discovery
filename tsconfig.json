@@ -10,17 +10,7 @@
     "types": ["node"]
   },
   "include": [
-    "index.ts",
-    "application.ts",
-    "commands.ts",
-    "storage.ts",
-    "ui-model.ts",
-    "profiles.ts",
-    "providers.ts",
-    "schema-repair.ts",
-    "version.ts",
-    "ui/**/*.ts",
-    "*.test.ts",
+    "extensions/**/*.ts",
     "tests/**/*.ts"
   ],
   // Vendored byte-identical from skills/pi-extension-builder (guarded by
@@ -31,6 +21,6 @@
   // model-discovery panel model. Nothing imports it yet; byte-identity (not
   // typechecking) is the guard. See ui/VENDORED.sha256.
   "exclude": [
-    "ui/panel-model.ts"
+    "extensions/ui/panel-model.ts"
   ]
 }

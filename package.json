@@ -29,16 +29,7 @@
     "access": "public"
   },
   "files": [
-    "index.ts",
-    "application.ts",
-    "commands.ts",
-    "storage.ts",
-    "ui-model.ts",
-    "profiles.ts",
-    "providers.ts",
-    "schema-repair.ts",
-    "version.ts",
-    "ui/",
+    "extensions/",
     "README.md",
     "LICENSE"
   ],
@@ -61,7 +52,7 @@
   },
   "pi": {
     "extensions": [
-      "./index.ts"
+      "./extensions/index.ts"
     ]
   }
 }

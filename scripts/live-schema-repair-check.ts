@@ -9,7 +9,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { repairRequestToolSchemas, describeToolSchemaRepair } from "../schema-repair.ts";
+import { repairRequestToolSchemas, describeToolSchemaRepair } from "../extensions/schema-repair.ts";
 
 const BASE = process.argv[2];
 const MODEL = process.argv[3] ?? "qwen3.8-27b";

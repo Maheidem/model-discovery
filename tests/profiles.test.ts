@@ -17,7 +17,7 @@ import {
 	validateProfileSlug,
 	type ModelProfile,
 	type ModelProfileRouting,
-} from "./profiles.ts";
+} from "../extensions/profiles.ts";
 
 const baseModel = {
 	id: "Qwen3.8-27B",

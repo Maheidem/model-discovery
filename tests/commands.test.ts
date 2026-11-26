@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { completeDiscoverArgs, parseDiscoverArgs } from "./commands.ts";
+import { completeDiscoverArgs, parseDiscoverArgs } from "../extensions/commands.ts";
 
 // Compare via JSON roundtrip: the parser emits explicit `source: undefined`
 // keys on some intents, and deepStrictEqual distinguishes those from absence.

@@ -11,7 +11,7 @@ import {
 	enrichModels,
 	extractModelConfig,
 	fetchModels,
-} from "./providers.ts";
+} from "../extensions/providers.ts";
 
 // ---------------------------------------------------------------------------
 // Fixture server

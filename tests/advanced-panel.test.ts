@@ -6,9 +6,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ADVANCED_MAINTENANCE_ROWS, ADVANCED_PANEL_ROWS, buildAdvancedSnapshot } from "../ui/advanced-panel.ts";
-import { BACK_KEY } from "../ui/endpoint-panel.ts";
-import { modelDiscoveryVersion } from "../version.ts";
+import { ADVANCED_MAINTENANCE_ROWS, ADVANCED_PANEL_ROWS, buildAdvancedSnapshot } from "../extensions/ui/advanced-panel.ts";
+import { BACK_KEY } from "../extensions/ui/endpoint-panel.ts";
+import { modelDiscoveryVersion } from "../extensions/version.ts";
 
 const src = (name: string, i = 0) => ({
 	name,

@@ -15,8 +15,8 @@ import {
 	homeSourceRows,
 	type HomeSnapshotInput,
 	type HomeSourceInput,
-} from "../ui/home.ts";
-import { modelDiscoveryVersion } from "../version.ts";
+} from "../extensions/ui/home.ts";
+import { modelDiscoveryVersion } from "../extensions/version.ts";
 
 function source(name: string, over: Partial<HomeSourceInput> = {}): HomeSourceInput {
 	return { name, baseUrl: `http://${name}:8080`, serverType: "llama.cpp", modelCount: 3, availability: "ready", ...over };

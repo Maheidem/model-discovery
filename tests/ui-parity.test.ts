@@ -34,9 +34,9 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { createDiscoveryApplication, type DiscoveryApplication, type DiscoveryRepository } from "../application.ts";
-import { modelDiscoveryVersion } from "../version.ts";
-import { parseDiscoverArgs } from "../commands.ts";
+import { createDiscoveryApplication, type DiscoveryApplication, type DiscoveryRepository } from "../extensions/application.ts";
+import { modelDiscoveryVersion } from "../extensions/version.ts";
+import { parseDiscoverArgs } from "../extensions/commands.ts";
 import {
 	DISCOVER_ACTIONS,
 	IMPLEMENTED_PANEL_KEYS,

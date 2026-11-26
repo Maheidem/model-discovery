@@ -20,7 +20,7 @@ function shippedFiles(): Set<string> {
 		const abs = path.join(ROOT, entry);
 		if (entry.endsWith("/")) {
 			if (!fs.existsSync(abs)) continue;
-			for (const name of fs.readdirSync(abs)) {
+			for (const name of fs.readdirSync(abs, { recursive: true }) as string[]) {
 				if (name.endsWith(".ts")) set.add(`${entry}${name}`);
 			}
 		} else {
@@ -55,6 +55,6 @@ test("tarball: every relative ./xxx.ts import resolves inside the shipped set", 
 
 test("tarball: the shipped entry point exists", () => {
 	const shipped = shippedFiles();
-	assert.ok(shipped.has("index.ts"), "index.ts must ship");
-	assert.ok(fs.existsSync(path.join(ROOT, "index.ts")));
+	assert.ok(shipped.has("extensions/index.ts"), "extensions/index.ts must ship");
+	assert.ok(fs.existsSync(path.join(ROOT, "extensions", "index.ts")));
 });

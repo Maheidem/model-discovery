@@ -22,6 +22,6 @@ import { extensionVersion } from "./ui/version.ts";
 
 export function modelDiscoveryVersion(): string {
 	return extensionVersion({
-		packageJsonPath: path.join(path.dirname(fileURLToPath(import.meta.url)), "package.json"),
+		packageJsonPath: path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json"),
 	});
 }

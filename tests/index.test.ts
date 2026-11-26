@@ -3,10 +3,10 @@ import { readFileSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import extension from "./index.ts";
-import { STORAGE_PATH, type DiscoveredProvider } from "./storage.ts";
-import { HOME_PANEL_ROWS } from "./ui/home.ts";
-import { modelDiscoveryVersion } from "./version.ts";
+import extension from "../extensions/index.ts";
+import { STORAGE_PATH, type DiscoveredProvider } from "../extensions/storage.ts";
+import { HOME_PANEL_ROWS } from "../extensions/ui/home.ts";
+import { modelDiscoveryVersion } from "../extensions/version.ts";
 
 type CommandRegistration = {
 	description?: string;

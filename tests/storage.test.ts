@@ -7,7 +7,7 @@ import {
 	getStorageDiagnostic,
 	loadProviders,
 	saveProviders,
-} from "./storage.ts";
+} from "../extensions/storage.ts";
 
 test("storage writes atomically with owner-only permissions", { concurrency: false }, () => {
 	assert.deepEqual(loadProviders(), []);

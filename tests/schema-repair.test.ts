@@ -25,7 +25,7 @@ import {
 	repairRequestToolSchemas,
 	repairToolSchema,
 	schemaNeedsRepair,
-} from "./schema-repair.ts";
+} from "../extensions/schema-repair.ts";
 
 // ---------------------------------------------------------------------------
 // Fixtures

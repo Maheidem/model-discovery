@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createDiscoveryApplication, type DiscoveryRepository } from "./application.ts";
-import type { ModelProfileRouting } from "./profiles.ts";
-import type { DiscoveredProvider } from "./storage.ts";
+import { createDiscoveryApplication, type DiscoveryRepository } from "../extensions/application.ts";
+import type { ModelProfileRouting } from "../extensions/profiles.ts";
+import type { DiscoveredProvider } from "../extensions/storage.ts";
 
 function fixture() {
 	let providers: DiscoveredProvider[] = [{ name: "local", baseUrl: "http://localhost:8080" }];

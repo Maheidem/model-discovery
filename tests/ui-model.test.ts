@@ -7,8 +7,8 @@ import {
 	formatDiscoveryStatus,
 	sourceAvailability,
 	summarizeSources,
-} from "./ui-model.ts";
-import type { DiscoveredProvider } from "./storage.ts";
+} from "../extensions/ui-model.ts";
+import type { DiscoveredProvider } from "../extensions/storage.ts";
 
 const providers: DiscoveredProvider[] = [
 	{
