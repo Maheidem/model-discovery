@@ -2,6 +2,16 @@
 
 A panel-based Pi control surface for discovering and managing local AI model sources. It works with llama.cpp, oMLX, Ollama, vLLM, SGLang, LM Studio, and other OpenAI-compatible servers, with useful status and diagnostics in TUI, RPC, JSON, and print modes.
 
+## Install
+
+```bash
+# Via npm
+pi install npm:@maheidem/model-discovery
+
+# Via git
+pi install git:github.com/Maheidem/model-discovery
+```
+
 ## Features
 
 - **Auto-detect server type** from headers and model data (incl. MTPLX's `capability` field)
@@ -18,13 +28,13 @@ A panel-based Pi control surface for discovering and managing local AI model sou
 - **Authenticated endpoints** — enroll, replace, validate, or clear bearer API keys through masked TUI input
 - **Multi-endpoint management** — add, rename, scan, and remove local model sources
 - **LLM-callable tool** — the `discover_models` tool can register endpoints on the agent's behalf
-- **Shared Pi UX** — one centralized home dashboard plus fixed-height secondary panels (vendored `SettingsPanel` kit), fixed-frame rendering that can never smear the composer, injected keybindings, searchable windows, cancellable loaders, and masked secrets
+- **Shared Pi UX** — one centralized home dashboard plus fixed-height secondary panels (`SettingsPanel` from `@maheidem/pi-panel-kit`), fixed-frame rendering that can never smear the composer, injected keybindings, searchable windows, cancellable loaders, and masked secrets
 - **Headless command surface** — every panel mutation has a nested `/discover` verb with identical semantics (panel ≡ command ≡ headless); stable status, diagnostics, paths, and explicit add/remove actions for RPC and scripts
 - **Persistent storage** in `~/.pi/agent/model-discovery.json`
 
 ## Terminal UI (v0.9.0)
 
-`/discover` opens one centralized home dashboard (vendored `SettingsPanel`) with a live health summary, fixed 23-row frames everywhere, and one surface at a time — the composer/input bar never moves or smears.
+`/discover` opens one centralized home dashboard (`SettingsPanel` from `@maheidem/pi-panel-kit`) with a live health summary, fixed 23-row frames everywhere, and one surface at a time — the composer/input bar never moves or smears.
 
 | Surface | Open | Contents |
 | --- | --- | --- |
@@ -36,16 +46,6 @@ A panel-based Pi control surface for discovering and managing local AI model sou
 | Tool cards | `discover_models` | neutral per-state cards: `✓ registered`, `⊘ online · no models`, `✗ failed` — plus the next action |
 
 Parity rules (enforced by `tests/ui-parity.test.ts`): every panel row key maps to a nested `/discover` verb and an application method; secrets are accepted **only** through the masked field or `--key-from-env`, never inline; destructive rows require two presses in TUI and `--yes` headless; failure severity is read from authoritative `isError` flags, never from message text.
-
-## Installation
-
-```bash
-# Via npm
-pi install npm:@maheidem/model-discovery
-
-# Via git
-pi install git:github.com/Maheidem/model-discovery
-```
 
 ## Usage
 
@@ -339,13 +339,15 @@ Every successful live scan atomically persists the raw model catalogue as the so
 
 Legacy implicit routing created by early v0.6 development builds is migrated once: its sampling-only adaptive alias becomes an explicit router with the same model ID, and its concrete presets are retained. Future presets never activate routing implicitly.
 
-## Storage
+## Configuration
 
 Discovered providers, cached catalogues, model overrides, presets, credentials, and explicit routing maps are persisted atomically with owner-only (`0600`) permissions in:
 
 ```text
 ~/.pi/agent/model-discovery.json
 ```
+
+The extension builds this path from the pi agent dir (`getAgentDir()`), so the file moves with `PI_CODING_AGENT_DIR` when that variable is set. `/discover paths` prints the path in use. The code exports it as `CONFIG_PATH` from `extensions/config.ts`.
 
 If this JSON is corrupt, startup falls back to an empty source list and preserves the unreadable file beside it as `model-discovery.json.corrupt-<timestamp>` instead of overwriting the evidence. Existing profile-routing schema migrations remain automatic.
 
@@ -357,15 +359,16 @@ If this JSON is corrupt, startup falls back to an empty source list and preserve
 
 ## Development
 
-All suites run with isolated temporary `HOME` directories:
+The code is in `extensions/` (pi entry `extensions/index.ts`). All tests are in `tests/`. `npm test` runs `tests/run.mjs`, the shared runner of `@maheidem/pi-panel-kit`. It needs Node 22.18 or newer. Each test file runs in its own child with an isolated temporary `HOME`.
 
 ```bash
 npm run typecheck
 npm test
+npm run test:e2e   # live pi against fake local servers (tests/offline.e2e.ts)
 npm pack --dry-run
 ```
 
-`prepack` runs strict typechecking and the complete offline suite automatically. Provider detection, enrichment, profile semantics, routing, schema repair, storage, application actions, responsive wizard components, command modes, and adapter registration all have regression coverage.
+`prepack` runs strict typechecking and the complete offline suite automatically. Provider detection, enrichment, profile semantics, routing, schema repair, storage, application actions, panel builders, command modes, and adapter registration all have regression coverage.
 
 ## License
 

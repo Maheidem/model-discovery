@@ -68,7 +68,7 @@ mlx-lm / MTPLX) the server source code.
 | 6 | MTPLX | Detected via the `capability` field on `/v1/models` entries (still generic if a build omits it on chat entries) |
 
 All enrichment is silent best-effort (404/connection refusal/timeout leaves the
-catalogue untouched) and is covered by `enrichment.test.ts` (local HTTP fixtures).
+catalogue untouched) and is covered by `tests/enrichment.test.ts` (local HTTP fixtures).
 
 ## Remaining gaps (next tuning candidates, ranked)
 
