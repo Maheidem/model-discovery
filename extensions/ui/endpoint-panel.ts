@@ -602,7 +602,8 @@ export function buildPresetSnapshot(input: PresetPanelInput): BuiltPanel {
 			kind: "toggle",
 		},
 		{ key: `${base}:clone`, label: "Clone preset", value: `"${input.handle}-copy" ›`, kind: "action", valueStyle: "muted" },
-		{ key: `${base}:remove`, label: "Remove preset", ...armCell(`${base}:remove`, `remove "${input.handle}" from "${input.modelId}"`, armed), kind: "action" },
+		// Split literal: the kit tarball test reads `from "<x>"` in one literal as an import.
+		{ key: `${base}:remove`, label: "Remove preset", ...armCell(`${base}:remove`, `remove "${input.handle}" from ` + `"${input.modelId}"`, armed), kind: "action" },
 		{ key: BACK_KEY, label: "Back to presets", value: "esc", kind: "action", valueStyle: "muted" },
 	];
 	const shortcuts: PanelShortcut[] = [
