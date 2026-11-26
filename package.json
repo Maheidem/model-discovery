@@ -31,10 +31,12 @@
   "files": [
     "extensions/",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
     "test": "node tests/run.mjs",
+    "test:e2e": "node --test --test-concurrency=1 --test-timeout=120000 tests/offline.e2e.ts",
     "typecheck": "tsc -p tsconfig.json",
     "prepack": "npm run typecheck && npm test"
   },
