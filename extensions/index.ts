@@ -713,6 +713,19 @@ export default async function (pi: ExtensionAPI) {
 		}
 	}
 
+	/**
+	 * Select the model again after a config change. `pi.setModel` puts the
+	 * thinking level back to the default, so set the level of the user again.
+	 */
+	async function setModelKeepLevel(
+		ctx: ExtensionCommandContext,
+		model: Parameters<ExtensionAPI["setModel"]>[0],
+	): Promise<void> {
+		const level = ctx.thinkingLevel;
+		await pi.setModel(model);
+		if (level) pi.setThinkingLevel(level);
+	}
+
 	async function refreshSelectedProfile(
 		ctx: ExtensionCommandContext,
 		providerName: string,
@@ -721,7 +734,7 @@ export default async function (pi: ExtensionAPI) {
 	): Promise<void> {
 		if (ctx.model?.provider !== providerName || ctx.model.id !== previousModelId) return;
 		const refreshed = ctx.modelRegistry.find(providerName, nextModelId);
-		if (refreshed) await pi.setModel(refreshed);
+		if (refreshed) await setModelKeepLevel(ctx, refreshed);
 	}
 
 	async function refreshAdaptiveSelection(
@@ -736,7 +749,7 @@ export default async function (pi: ExtensionAPI) {
 		const valid =
 			routing.enabled && analyzeExplicitProfileRouting(routing, app.profiles(provider, modelId)).errors.length === 0;
 		const refreshed = ctx.modelRegistry.find(provider.name, valid ? adaptiveId : modelId);
-		if (refreshed) await pi.setModel(refreshed);
+		if (refreshed) await setModelKeepLevel(ctx, refreshed);
 	}
 
 

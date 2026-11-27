@@ -115,7 +115,7 @@ Notes:
 - `source defaults` also accepts `max <n>` alone.
 - `preset set` accepts these fields: `enable_thinking`, `reasoning_effort`, `preserve_thinking`, `temperature`, `top_p`, `top_k`, `min_p`, `repetition_penalty`, `presence_penalty`, `frequency_penalty`. A new preset is hidden from `/model`.
 - `preset defaults` needs `--yes` outside the TUI when it replaces a stored preset.
-- `routing conventional` is the verb of the row "Map presets by kind". `/discover help` does not list it.
+- `routing conventional` is the verb of the row "Map presets by kind".
 
 Examples:
 

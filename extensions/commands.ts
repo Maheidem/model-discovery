@@ -64,6 +64,7 @@ export const DISCOVER_USAGE = [
 	"/discover preset remove <source> <modelId> <slug> [--yes]",
 	"/discover preset defaults <source> <modelId> [--yes]   copy the recommended presets into the config",
 	"/discover routing set <source> <modelId> <level> <slug>",
+	"/discover routing conventional <source> <modelId>      map the presets to the levels by kind",
 	"/discover routing remove <source> <modelId> [--yes]",
 ].join("\n");
 
