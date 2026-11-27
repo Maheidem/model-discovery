@@ -1732,14 +1732,15 @@ export default async function (pi: ExtensionAPI) {
 							draft.fields[field] = value;
 							return null;
 						}
+						// A toggle row comes through `apply` with its new value.
+						if (key === `${presetKey(config.id, draft.handle)}:expose`) {
+							draft.exposeAsModel = raw === "true";
+							return null;
+						}
 						return `Unknown setting '${key}'.`;
 					},
 					activate: (key): PanelActionResult => {
 						const base = presetKey(config.id, draft.handle);
-						if (key === `${base}:expose`) {
-							draft.exposeAsModel = !draft.exposeAsModel;
-							return { kind: "updated", message: draft.exposeAsModel ? "Visible as a fixed model in /model." : "Hidden from /model (routing only)." };
-						}
 						if (key === `${base}:save`) {
 							const issues = draftIssues(draft, controls);
 							if (issues.length) return { kind: "error", message: issues[0] ?? "Invalid draft." };
