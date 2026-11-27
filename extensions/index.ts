@@ -27,7 +27,6 @@ import {
 	expandAdaptiveProfileRouters,
 	expandModelProfiles,
 	profileModelId,
-	REASONING_EFFORTS,
 	repetitionPenaltyKeyForServer,
 	THINKING_LEVELS,
 	type ModelProfile,
@@ -209,9 +208,6 @@ export default async function (pi: ExtensionAPI) {
 			if (key.startsWith(routePrefix)) fixedProfileLabels.delete(key);
 		}
 		const compat: Record<string, unknown> = { ...provider.compat };
-		if (serverType === "llama.cpp" || serverType === "oMLX" || serverType === "Ollama") {
-			if (compat.supportsDeveloperRole === undefined) compat.supportsDeveloperRole = false;
-		}
 		if (shouldRepairToolSchemas(provider, serverType)) schemaRepairProviders.add(provider.name);
 		else schemaRepairProviders.delete(provider.name);
 		if (serverType === "oMLX") {
@@ -475,33 +471,6 @@ export default async function (pi: ExtensionAPI) {
 	}
 
 
-
-
-
-	type ProfileSamplingField = {
-		key: keyof ProfileSampling;
-		label: string;
-		description: string;
-		example: string;
-	};
-
-	function profileSamplingFields(serverType: string): ProfileSamplingField[] {
-		const repetitionPenaltyKey = repetitionPenaltyKeyForServer(serverType);
-		return [
-			{ key: "temperature", label: "temperature", description: "0–2; 0 is greedy", example: "0.7" },
-			{ key: "topP", label: "top_p", description: "0–1; 1 disables top-p filtering", example: "0.9" },
-			{ key: "topK", label: "top_k", description: "integer ≥ 0; omit to keep the backend default", example: "20" },
-			{ key: "minP", label: "min_p", description: "0–1; 0 disables min-p filtering", example: "0.05" },
-			{
-				key: "repetitionPenalty",
-				label: repetitionPenaltyKey,
-				description: "> 0; 1 disables the multiplicative penalty",
-				example: "1.05",
-			},
-			{ key: "presencePenalty", label: "presence_penalty", description: "-2–2; 0 disables it", example: "0" },
-			{ key: "frequencyPenalty", label: "frequency_penalty", description: "-2–2; 0 disables it", example: "0" },
-		];
-	}
 
 
 
@@ -1320,7 +1289,7 @@ export default async function (pi: ExtensionAPI) {
 			slug: handle,
 			...(Object.keys(kwargs).length ? { chatTemplateKwargs: kwargs as ModelProfile["chatTemplateKwargs"] } : {}),
 			...(Object.keys(sampling).length ? { sampling } : {}),
-			...(exposeAsModel ? { exposeAsModel: true } : {}),
+			exposeAsModel,
 		};
 	}
 
@@ -2458,7 +2427,18 @@ export default async function (pi: ExtensionAPI) {
 						emitText(ctx, `Unknown preset field: ${intent.field}. Try one of: ${PRESET_FIELD_ORDER.join(", ")}`, "error");
 						return;
 					}
-					const profile = flatToProfile(intent.slug, fields, existing?.exposeAsModel ?? false);
+					const profile = flatToProfile(intent.slug, fields, existing ? existing.exposeAsModel !== false : false);
+					const presetConfigs = (cachedCatalog(provider)?.models ?? []).map(extractModelConfig);
+					const presetConfig = presetConfigs.find((item) => item.id === intent.modelId);
+					if (!presetConfig) {
+						emitText(ctx, `Unknown model "${intent.modelId}" on source "${provider.name}".`, "error");
+						return;
+					}
+					const presetError = validateProfileForProvider(provider, presetConfig, presetConfigs, profile, existing?.slug);
+					if (presetError) {
+						emitText(ctx, `Preset not saved: ${presetError}`, "error");
+						return;
+					}
 					const prefetched = cachedCatalog(provider) ?? { models: [], serverType: provider.serverType ?? "OpenAI-compatible" };
 					app.saveProfile(provider, intent.modelId, profile, existing?.slug);
 					const registered = await persistProfileChange(ctx, provider, prefetched);
@@ -2621,11 +2601,11 @@ export default async function (pi: ExtensionAPI) {
 		description:
 			"Discover and register models from an OpenAI-compatible endpoint (llama.cpp, oMLX, Ollama, vLLM). Reads actual server config. Use when the user asks to add a local model server.",
 		parameters: discoverModelsParameters,
+		promptSnippet: "Scan an OpenAI-compatible endpoint and register its models as a provider",
 		promptGuidelines: [
 			"Use discover_models when the user wants to scan a local or remote OpenAI-compatible endpoint (llama.cpp, oMLX, Ollama, vLLM) and register its models as a provider.",
-			"Scanning is read-only against the endpoint: it reads live server config to build model entries. Registering makes models selectable, it does not change defaults or routing.",
-			"Results render as state cards in the TUI; models become selectable via /model after registration.",
-			"Change routing, profiles, and presets via the /discover panel's nested verbs (status, doctor, route) rather than re-scanning.",
+			"discover_models only reads the endpoint. It registers the models for /model. It does not change the default model, the presets or the routing.",
+			"After discover_models, tell the user to use the /discover command to change presets, routing or a model setting. Do not call discover_models again for that.",
 		],
 		async execute(_toolCallId, params) {
 			let result: Awaited<ReturnType<typeof discoverAndRegisterSource>>;

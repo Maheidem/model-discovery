@@ -228,24 +228,53 @@ export function getModelProfiles(provider: DiscoveredProvider, modelId: string):
 	return profiles.filter((profile): profile is ModelProfile => validateModelProfile(profile) === null);
 }
 
+/** The stored preset list as it is in the file. Entries that fail validation stay in it. */
+function rawModelProfiles(provider: DiscoveredProvider, modelId: string): unknown[] {
+	const profiles: unknown = provider.modelProfiles?.[modelId];
+	return Array.isArray(profiles) ? [...profiles] : [];
+}
+
+function rawProfileSlug(profile: unknown): string | undefined {
+	const slug = (profile as { slug?: unknown } | null)?.slug;
+	return typeof slug === "string" ? slug : undefined;
+}
+
+export interface InvalidModelProfile {
+	modelId: string;
+	slug: string;
+	error: string;
+}
+
+/** Stored presets that fail validation. They are not registered, and a save does not delete them. */
+export function getInvalidModelProfiles(provider: DiscoveredProvider): InvalidModelProfile[] {
+	const invalid: InvalidModelProfile[] = [];
+	for (const [modelId, profiles] of Object.entries(provider.modelProfiles ?? {})) {
+		if (!Array.isArray(profiles)) continue;
+		for (const profile of profiles as unknown[]) {
+			const error = validateModelProfile(profile);
+			if (error) invalid.push({ modelId, slug: rawProfileSlug(profile) ?? "(no name)", error });
+		}
+	}
+	return invalid;
+}
+
 export function saveModelProfile(
 	provider: DiscoveredProvider,
 	modelId: string,
 	profile: ModelProfile,
 	previousSlug?: string,
 ): void {
-	const profiles = getModelProfiles(provider, modelId);
-	const index = previousSlug === undefined ? -1 : profiles.findIndex((item) => item.slug === previousSlug);
-	const next = [...profiles];
+	const next = rawModelProfiles(provider, modelId);
+	const index = previousSlug === undefined ? -1 : next.findIndex((item) => rawProfileSlug(item) === previousSlug);
 	if (index >= 0) next[index] = profile;
 	else next.push(profile);
-	provider.modelProfiles = { ...provider.modelProfiles, [modelId]: next };
+	provider.modelProfiles = { ...provider.modelProfiles, [modelId]: next as ModelProfile[] };
 }
 
 export function deleteModelProfile(provider: DiscoveredProvider, modelId: string, slug: string): void {
-	const nextProfiles = getModelProfiles(provider, modelId).filter((profile) => profile.slug !== slug);
+	const nextProfiles = rawModelProfiles(provider, modelId).filter((profile) => rawProfileSlug(profile) !== slug);
 	const modelProfiles = { ...provider.modelProfiles };
-	if (nextProfiles.length > 0) modelProfiles[modelId] = nextProfiles;
+	if (nextProfiles.length > 0) modelProfiles[modelId] = nextProfiles as ModelProfile[];
 	else delete modelProfiles[modelId];
 	provider.modelProfiles = Object.keys(modelProfiles).length > 0 ? modelProfiles : undefined;
 }

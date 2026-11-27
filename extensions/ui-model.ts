@@ -1,6 +1,6 @@
 import type { SelectItem } from "@earendil-works/pi-tui";
 import { redactSecret } from "./providers.ts";
-import { STORAGE_PATH, getStorageDiagnostic, type DiscoveredProvider } from "./storage.ts";
+import { STORAGE_PATH, getInvalidModelProfiles, getStorageDiagnostic, type DiscoveredProvider } from "./storage.ts";
 
 export type SourceAvailability = "ready" | "degraded" | "unavailable" | "unscanned";
 
@@ -122,6 +122,9 @@ export function buildDiagnosticsLines(providers: readonly DiscoveredProvider[]):
 		lines.push(`  authentication: ${provider.apiKey ? "API key configured" : "anonymous"}`);
 		if (provider.lastScanned) lines.push(`  last successful scan: ${new Date(provider.lastScanned).toLocaleString()}`);
 		if (provider.lastScanError) lines.push(`  latest error: ${redactSecret(provider.lastScanError, provider.apiKey)}`);
+		for (const invalid of getInvalidModelProfiles(provider)) {
+			lines.push(`  invalid preset kept in the file, not registered: ${invalid.modelId}@${invalid.slug} (${invalid.error})`);
+		}
 	}
 	return lines;
 }

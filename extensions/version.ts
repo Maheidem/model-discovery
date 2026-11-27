@@ -1,12 +1,10 @@
 /**
  * model-discovery — loaded-version provenance (slice 0 of the UI alignment plan).
  *
- * A running Pi session keeps whatever extension code it loaded at startup;
- * this repo is loaded BY PATH from `~/.pi/agent/settings.json`, so a stale
- * in-process copy is indistinguishable from a fresh one without a version
- * line. Every panel summary, report header, and tool card therefore carries
- * the version actually executing, so "stale copy in this process" is
- * self-evident instead of mysterious.
+ * A running pi session keeps the extension code that it loaded at startup.
+ * pi can load this extension from the npm store or from a local path. Each
+ * panel summary, report header and tool card shows the version that runs,
+ * so an old copy in the process is easy to see.
  *
  * Thin wrapper over `extensionVersion` of `@maheidem/pi-panel-kit`.
  * It reads the `package.json` one folder up from this module (the package
