@@ -16,14 +16,14 @@ pi install git:github.com/Maheidem/model-discovery
 
 - **Auto-detect server type** from headers and model data (incl. MTPLX's `capability` field)
 - **Read server-reported configuration** — context window, max tokens, reasoning, and vision, with per-model overrides on top
-- **Native-endpoint enrichment** — llama.cpp `/props`, oMLX `/v1/models/status`, and Ollama `/api/tags` + `/api/ps` fill in what the OpenAI layer omits (real context windows, load state, VLM flags), silently best-effort
-- **Auto-detect vision-capable models (VLMs)** — from architecture metadata, llama.cpp `--mmproj` args, or oMLX capabilities
-- **Auto-detect reasoning capability** — from `capabilities`, explicit `reasoning` fields, `--reasoning-budget`, and Qwen model names on oMLX
-- **Auto-detect reasoning format** — oMLX servers get `chat_template_kwargs` thinking support automatically
-- **Per-model compatibility** — `supportsDeveloperRole: false` for llama.cpp, oMLX, and Ollama; Qwen thinking format for oMLX
-- **Fine-tune per-model overrides** — context window, max output, reasoning, and vision support
-- **Profile-routed native thinking levels** — Shift-Tab can select complete thinking and sampling presets
-- **Named model presets** — reuse complete thinking/sampling bundles as fixed aliases or adaptive routes
+- **Native-endpoint enrichment** — llama.cpp `/props`, oMLX `/v1/models/status`, and Ollama `/api/tags` + `/api/ps` fill in what the OpenAI layer omits (real context windows, load state, VLM flags, thinking controls), silently best-effort
+- **Auto-detect vision-capable models (VLMs)** — from architecture metadata, llama.cpp `--mmproj` args, oMLX `model_type` or capabilities, then the family file
+- **Thinking profile of each model** — the server report or the family file says which thinking values a model accepts. The extension sends only those values
+- **Model families** — nine bundled families give the recommended thinking values and sampling values. The family data gets updates with no new package version
+- **Recommended defaults** — a base model of a known family sends the recommended values at each pi thinking level, with no stored preset
+- **Fine-tune per-model overrides** — context window, max output, reasoning, vision, family, recommended defaults and hidden state
+- **Named model presets** — reuse complete thinking/sampling bundles as fixed aliases or as an adaptive alias that follows Shift-Tab
+- **Hidden non-chat models** — embedding, speech and reranker models stay out of `/model` by default
 - **Offline management** — retain the last successful server catalogue for configuration and startup fallback
 - **Authenticated endpoints** — enroll, replace, validate, or clear bearer API keys through masked TUI input
 - **Multi-endpoint management** — add, rename, scan, and remove local model sources
@@ -32,7 +32,7 @@ pi install git:github.com/Maheidem/model-discovery
 - **Headless command surface** — every panel mutation has a nested `/discover` verb with identical semantics (panel ≡ command ≡ headless); stable status, diagnostics, paths, and explicit add/remove actions for RPC and scripts
 - **Persistent storage** in `~/.pi/agent/model-discovery.json`
 
-## Terminal UI (v0.9.0)
+## Terminal UI
 
 `/discover` opens one centralized home dashboard (`SettingsPanel` from `@maheidem/pi-panel-kit`) with a live health summary, fixed 23-row frames everywhere, and one surface at a time — the composer/input bar never moves or smears.
 
@@ -40,9 +40,9 @@ pi install git:github.com/Maheidem/model-discovery
 | --- | --- | --- |
 | Home dashboard | `/discover` | version header, per-source health rows, scan status, actions (add, presets, routing, rescan, doctor, configure advanced…) |
 | Source panel | pick a source | live scan header, rename, masked API key entry (validate-and-revalidate), fallback ctx/max, per-model overrides, arm-then-confirm remove |
-| Model panel | model row | server vs override vs effective values, vision toggle, presets and routing entries |
-| Presets / routing | presets · routing rows | draft-until-save editor; four-preset conventional layout mapped across the seven Pi thinking levels |
-| Advanced hub | `Configure advanced…` | re-scan all, diagnostics, storage path, command reference, per-source config entries |
+| Model panel | model row | the value in use and its source for each field; reasoning, vision, recommended defaults, family and hidden rows; presets and routing entries |
+| Presets / routing | presets · routing rows | draft-until-save editor; "Customize recommended presets"; "Map presets by kind" across the seven Pi thinking levels |
+| Advanced hub | `Configure advanced…` | re-scan all, family data update, diagnostics, storage path, command reference, per-source config entries |
 | Tool cards | `discover_models` | neutral per-state cards: `✓ registered`, `⊘ online · no models`, `✗ failed` — plus the next action |
 
 Parity rules (enforced by `tests/ui-parity.test.ts`): every panel row key maps to a nested `/discover` verb and an application method; secrets are accepted **only** through the masked field or `--key-from-env`, never inline; destructive rows require two presses in TUI and `--yes` headless; failure severity is read from authoritative `isError` flags, never from message text.
@@ -56,14 +56,14 @@ Sources → source details → model details → presets and adaptive routing
         ↘ add / scan / authentication / diagnostics
 ```
 
-The home screen shows source and cached-model health before offering the primary actions. Every list supports Pi's configured navigation/confirm/cancel bindings and type-to-filter. Escape returns to the logical parent. Long diagnostics and exact-request previews use a scrolling secondary view rather than clipping the footer.
+The home screen shows source and cached-model health before offering the primary actions. Every list supports Pi's configured navigation/confirm/cancel bindings and type-to-filter. Escape returns to the logical parent. Long diagnostics use a scrolling secondary view rather than clipping the footer.
 
 From the dashboard you can:
 
 - **Add source** — enter a URL, choose anonymous or API-key authentication, probe it, review models, and register
 - **Re-scan** — refresh one source or every source while retaining last known-good catalogues on failure
-- **Edit model** — override context, max output, reasoning, or vision support
-- **Manage presets** — create, clone, edit, rename, preview, route, or delete named variants
+- **Edit model** — override context, max output, reasoning, vision, family, recommended defaults or hidden state
+- **Manage presets** — create, clone, edit, rename, route, or delete named variants, or copy the recommended presets
 - **Rename source** — change the provider name shown by `/model`
 - **Authentication** — add, replace, validate, or clear a bearer credential through masked input
 - **Diagnostics** — inspect storage, source health, authentication state, and cached catalogue state without exposing secrets
@@ -72,33 +72,70 @@ From the dashboard you can:
 The same root command has a scriptable surface. Bare `/discover` prints status outside TUI instead of silently doing nothing:
 
 ```text
-/discover
-/discover status
-/discover doctor
-/discover paths
+/discover                          open the home dashboard (status outside TUI)
+/discover <url>                    add a source (shorthand for source add)
+/discover status                   show source and catalogue health
+/discover doctor                   show actionable diagnostics
+/discover rescan-all               refetch + re-register every source
+/discover families update          get new model family data and register every source again
+/discover paths                    show the configuration path
+/discover help                     show the command reference
+
 /discover source list
-/discover source add http://10.0.0.2:8080
-/discover source add http://10.0.0.2:8080 --name my-llama
-/discover source remove my-llama --yes
-/discover rescan-all
-/discover source rename my-llama llama-box
-/discover source auth my-llama --key-from-env LLAMA_API_KEY
-/discover source defaults my-llama ctx 131072 max 16384
-/discover source rescan my-llama
-/discover model qwen3-32b vision on
-/discover model qwen3-32b ctx 4096 --source my-llama
-/discover preset set my-llama qwen3-32b focused temperature 0.3
-/discover preset remove my-llama qwen3-32b focused --yes
-/discover routing set my-llama qwen3-32b medium fast
-/discover routing conventional my-llama qwen3-32b
-/discover routing remove my-llama qwen3-32b --yes
-/discover help
+/discover source add <url> [--name <name>]
+/discover source open <name>
+/discover source rename <old> <new>
+/discover source auth <name> --key-from-env ENV
+/discover source auth <name>
+/discover source defaults <name> ctx <n> [max <n>]
+/discover source rescan <name>
+/discover source remove <name> [--yes]
+
+/discover model <id> vision on|off|auto
+/discover model <id> reasoning on|off|auto
+/discover model <id> ctx <n>
+/discover model <id> max <n>
+/discover model <id> defaults on|off
+/discover model <id> family <family>|auto|none
+/discover model <id> hidden on|off
+
+/discover preset set <source> <modelId> <slug> <field> <value>
+/discover preset remove <source> <modelId> <slug> [--yes]
+/discover preset defaults <source> <modelId> [--yes]
+/discover routing set <source> <modelId> <level> <slug>
+/discover routing conventional <source> <modelId>
+/discover routing remove <source> <modelId> [--yes]
 ```
 
-The original direct-add shorthand remains compatible:
+Notes:
+
+- Add `--source <name>` to a `model` verb when the model id is on more than one source.
+- `auto` deletes the stored value of `vision` or `reasoning`. The server value or the family value applies again.
+- `source open` and `source auth <name>` with no flag need the TUI.
+- `source defaults` also accepts `max <n>` alone.
+- `preset set` accepts these fields: `enable_thinking`, `reasoning_effort`, `preserve_thinking`, `temperature`, `top_p`, `top_k`, `min_p`, `repetition_penalty`, `presence_penalty`, `frequency_penalty`. A new preset is hidden from `/model`.
+- `preset defaults` needs `--yes` outside the TUI when it replaces a stored preset.
+- `routing conventional` is the verb of the row "Map presets by kind". `/discover help` does not list it.
+
+Examples:
 
 ```text
-/discover http://10.0.0.2:8080
+/discover source add http://localhost:8080 --name my-llama
+/discover source auth my-llama --key-from-env LLAMA_API_KEY
+/discover source defaults my-llama ctx 131072 max 16384
+/discover model qwen3.8-27b vision auto
+/discover model qwen3.8-27b defaults off --source my-llama
+/discover model my-finetune family qwen3.8
+/discover model embeddinggemma-2 hidden off
+/discover preset defaults my-llama qwen3.8-27b
+/discover preset set my-llama qwen3.8-27b focused temperature 0.3
+/discover routing set my-llama qwen3.8-27b medium focused
+```
+
+The direct-add shorthand takes a URL only:
+
+```text
+/discover http://localhost:8080
 ```
 
 In TUI mode, add commands enter the full enrollment flow (form → probe → review → register). Outside TUI, source add probes and registers an anonymous source using server-reported/default values. Credentials are configured through the masked panel field or `--key-from-env` — never as inline arguments. Destructive commands require confirmation in TUI and explicit `--yes` outside TUI.
@@ -108,70 +145,199 @@ Enrollment explicitly asks whether the source is anonymous or requires an API ke
 The LLM-callable tool remains available:
 
 ```text
-discover_models(url="http://10.0.0.2:8080", providerName="my-llama")
+discover_models(url="http://localhost:8080", providerName="my-llama")
 ```
 
 The tool also accepts `apiKey`, but literal tool arguments may be retained in the agent session. Prefer the masked `/discover` flow for secrets.
 
-## How model settings are detected
+## How model settings are decided
 
-Every field is read from what the server actually reports, first value found wins:
+### Value order
 
-- **Context window** — `context_length` → `context_window` → `max_model_len` → `max_context_len` → `max_context_length` → llama.cpp `--ctx-size` (args or preset) → `meta.n_ctx` for loaded models → the source's default context window → `128000`
-- **Max output tokens** — `max_tokens` → `max_output_tokens` → `max_completion_tokens` → llama.cpp `--n-predict` → the source's default → `16384`
-- **Reasoning** — `capabilities` containing `reasoning` → an explicit `reasoning` field → llama.cpp `--reasoning-budget` ≠ 0 → Qwen model names on oMLX (when the server reports nothing)
-- **Vision** — `architecture.input_modalities` (vLLM, SGLang), vision-specific architecture keys (`vision_config`, `vision_model`, `mm_proj`, `multi_modal_projector`), llama.cpp `--mmproj`/`--vision` args or a preset name mentioning mmproj/vision, and oMLX `capabilities` containing `vision`, `image`, or `multimodal`
+The extension decides each model field in this order. The first value that exists wins.
 
-Detected vision-capable models get `input: ["text", "image"]`, so Pi accepts image input for them. The source defaults and every detection can be corrected per model with **Edit model**.
+| Field | Order |
+| --- | --- |
+| Context window | your setting → server report → source default → family file → `128000` |
+| Max output tokens | your setting → server report → source default → `16384` |
+| Reasoning | your setting → server thinking report → server reasoning field → family file → off |
+| Image input | your setting → server report (yes or no) → family file → no |
+| Thinking controls | server status report → chat template text → family file |
+
+"Your setting" is a model override from **Edit model** or from a `/discover model` verb. The model panel shows the value in use and its source for each field.
+
+### What the server report contains
+
+The extension reads these fields from `/v1/models`. The first field that exists wins.
+
+- **Context window** — `context_length` → `context_window` → `max_model_len` → `max_context_len` → `max_context_length` → llama.cpp `--ctx-size` (args or preset) → `meta.n_ctx` for loaded models → the native endpoint value
+- **Max output tokens** — `max_tokens` → `max_output_tokens` → `max_completion_tokens` → llama.cpp `--n-predict` → the native endpoint value
+- **Reasoning** — `capabilities` containing `reasoning` → an explicit `reasoning` field → llama.cpp `--reasoning-budget` ≠ 0 → oMLX `thinking_default: true`
+- **Image input** — `architecture.input_modalities` (vLLM, SGLang), vision-specific architecture keys (`vision_config`, `vision_model`, `mm_proj`, `multi_modal_projector`), llama.cpp `--mmproj`/`--vision` args or a preset name mentioning mmproj/vision, `capabilities` containing `vision`, `image`, or `multimodal`, llama.cpp `/props` `modalities.vision`, and oMLX `model_type`
+
+A model with image input gets `input: ["text", "image"]`, so Pi accepts image input for it.
 
 ### Native-endpoint enrichment
 
-For server types that expose richer *native* (non-OpenAI) endpoints, the probe runs one best-effort enrichment pass after the catalogue fetch, filling only what `/v1/models` omitted — explicit values always win:
+Some server types have native endpoints with more data. The probe reads them one time after the catalogue fetch. A value from `/v1/models` always wins.
 
-- **llama.cpp** — `GET /props`: the real runtime context window (`default_generation_settings.n_ctx`) and the authoritative VLM flag (`modalities.vision`)
-- **oMLX** — `GET /v1/models/status`: the effective per-model context window, max output tokens, load state (drives the `[loaded]` flag), and a thinking-capable default
-- **Ollama** — `GET /api/tags` + `GET /api/ps`: the model card's default context length and which models are currently loaded
+- **llama.cpp** — `GET /props`: the runtime context window (`default_generation_settings.n_ctx`), the image input flag (`modalities.vision`) and the chat template text (`chat_template`)
+- **oMLX** — `GET /v1/models/status`: the context window, the max output tokens, the load state, the model type (`model_type`) and the thinking report (`thinking_default`, `preserve_thinking_default`, `reasoning_efforts`)
+- **Ollama** — `GET /api/tags` + `GET /api/ps`: the default context length of the model card and the loaded models
 
-Enrichment is silent best-effort: a missing or failing native endpoint (or a connection refusal) leaves the catalogue exactly as the OpenAI layer reported it, and the cached catalogue retains the last known-good enrichment for offline fallback.
+The llama.cpp `/props` answer is for one model. The extension applies it when the catalogue has one model, or when a model id is equal to `model_alias` or to the file name of `model_path`. A router answer (`role: "router"`) applies to no model.
+
+A native endpoint that is missing or fails changes nothing. The cached catalogue keeps the last known-good enrichment for offline use.
+
+### Capabilities
+
+- Image input from the server has three states: yes, no and unknown. A server "no" wins over the family file. The family file decides only when the server says nothing.
+- oMLX reports image input through `model_type`: `vlm` is yes and `llm` is no.
+- The **Vision** and **Reasoning** rows and the `vision` and `reasoning` verbs accept `on`, `off` and `auto`. `auto` deletes your setting.
+- A model that is not a chat model is hidden by default. Its kind is embedding, speech-to-text, text-to-speech, reranker or other. Pi does not register a hidden model.
+- The server model type decides the kind. With no server value, the model name decides (for example `embed`, `rerank`, `asr`, `tts`).
+- `/discover model <id> hidden off` or the row **Hidden from /model** registers a hidden model. `hidden on` hides a chat model.
+- The **Family** row and `/discover model <id> family <family>` set the family of a model with an unclear name. `auto` finds the family from the name again. `none` gives the model no family.
 
 ### Compatibility settings
 
-The extension attaches `compat` to each registered model (Pi does not merge provider-level compat into individual models):
+The extension attaches `compat` to each registered model, because Pi does not merge provider-level `compat` into models.
 
-- llama.cpp, oMLX, Ollama: `supportsDeveloperRole: false`
-- oMLX: `thinkingFormat: "qwen-chat-template"` and `supportsReasoningEffort: true` for base models; fixed and adaptive profile aliases carry their own complete `chat_template_kwargs` independently
+A model whose thinking values come from this extension gets `thinkingFormat: "chat-template"`, `chatTemplateKwargs: {}` and `supportsReasoningEffort: false`. Thus Pi adds no thinking field of its own, and the extension controls each thinking field of the request.
 
 ### Model list display
 
-Each model shows `ctx <window> · max <tokens> · <source>`, where source is `server args` for a live llama.cpp process and `api` for other backends. Flags: `[vision]`, `[reasoning]`, `[reasoning?]` (undetermined and not overridden), `[loaded]` (llama.cpp, currently in memory), and `(edited)` when overrides are present.
+Each model row shows `ctx <window> · max <tokens> · <source>`. The source is `server args` for a live llama.cpp process and `api` for other servers. `(edited)` shows that the model has a setting of yours.
 
-## Native thinking levels
+The flags are in one bracket after the model id, for example `[vision, reasoning, loaded]`:
 
-For reasoning-capable Qwen models on oMLX, the base model and sampling-only profiles translate Pi's native Shift-Tab level into request-scoped `chat_template_kwargs`:
+- `vision`: the model accepts image input.
+- `reasoning`: reasoning is on for the model.
+- `loaded`: the server has the model in memory.
 
-| Pi level | `enable_thinking` | Qwen `reasoning_effort` |
+A hidden model shows `hidden (<kind>)`, for example `hidden (embedding)`. Hidden models are at the end of the list.
+
+## Thinking levels
+
+### Thinking profile
+
+The thinking profile of a model is the set of thinking controls that its chat template accepts:
+
+- the on/off switch `enable_thinking`;
+- the effort names that the template reads from `reasoning_effort`;
+- `preserve_thinking`.
+
+The profile comes from the first source that has it:
+
+1. The oMLX status report: `thinking_default`, `preserve_thinking_default` and `reasoning_efforts`.
+2. The text of the chat template from llama.cpp `/props.chat_template`.
+3. The family file.
+
+The extension sends only the values that the model accepts. It does not send an effort name that the template does not know.
+
+### Level map
+
+Pi has seven thinking levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`. The effort scale is `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
+
+| Model type | Level `off` | Each other level | Levels that Pi offers |
+| --- | --- | --- | --- |
+| Switch and efforts | `enable_thinking: false` | The effort with the same name if the model accepts it. If not, the nearest accepted effort. A tie goes to the higher effort. | all seven |
+| Efforts, no switch | the lowest accepted effort | the same rule | all seven |
+| Switch only | `enable_thinking: false` | `enable_thinking: true` | `off` and `high` |
+
+`enable_thinking` is always sent when the template has the switch. `preserve_thinking: true` is sent only when the template reads it and the family permits it.
+
+Worked examples:
+
+| Pi level | Qwen 3.8 (switch; low, medium, xhigh) | Qwen 3.8 Flash (switch; low, medium, high, xhigh) | Inkling v1 (no switch; 6 efforts) | Inkling 2 (no switch; 7 efforts) | Switch only (Qwen 3.6, Gemma 4) |
+| --- | --- | --- | --- | --- | --- |
+| `off` | thinking off | thinking off | `none` | `none` | thinking off |
+| `minimal` | `low` | `low` | `minimal` | `minimal` | thinking on (not offered) |
+| `low` | `low` | `low` | `low` | `low` | thinking on (not offered) |
+| `medium` | `medium` | `medium` | `medium` | `medium` | thinking on (not offered) |
+| `high` | `xhigh` | `high` | `high` | `high` | thinking on |
+| `xhigh` | `xhigh` | `xhigh` | `max` | `xhigh` | thinking on (not offered) |
+| `max` | `xhigh` | `xhigh` | `max` | `max` | thinking on (not offered) |
+
+### Model families
+
+A family file holds the facts that a server does not always report: the thinking controls, the recommended sampling values and the fallback capabilities. The first family whose pattern matches the model id or the model name wins.
+
+Nine families are bundled:
+
+| Family id | Models |
+| --- | --- |
+| `qwen3.8` | Qwen 3.8 |
+| `qwen3.6` | Qwen 3.6 |
+| `qwen3.5-small` | Qwen 3.5 small (0.8B, 2B) |
+| `qwen3.5` | Qwen 3.5 (4B and larger) |
+| `qwen3` | Qwen 3 |
+| `gemma4` | Gemma 4 |
+| `inkling2-small` | Inkling 2 Small |
+| `inkling2-mini` | Inkling 2 Mini |
+| `inkling` | Inkling |
+
+[docs/model-families.md](docs/model-families.md) gives the values of each family and the source of each value.
+
+### Recommended defaults
+
+A base model of a known family sends the recommended thinking values and sampling values at each Pi level. No stored preset is necessary. A model with a server thinking report and no family sends the thinking values only.
+
+- The footer shows `defaults: <family> · <preset>`, for example `defaults: Qwen 3.8 · thinking-medium`.
+- The row **Recommended defaults** or `/discover model <id> defaults off` turns the defaults off. The base model then sends the on/off switch only, with no effort and no sampling. A model with no switch then sends no thinking field.
+- `/discover model <id> defaults on` turns the defaults on again.
+
+Behaviour change from 0.10.0: the base Qwen 3.8 model on oMLX now sends `reasoning_effort` and sampling values. In 0.10.0 it sent the on/off switch only. Set `defaults off` to get the 0.10.0 behaviour.
+
+### Customize the recommended presets
+
+The recommended presets are not in your config. To edit them, copy them first:
+
+- Use the row **Customize recommended presets** in **Thinking & presets**, or
+- run `/discover preset defaults <source> <modelId>`.
+
+The action does this:
+
+1. It copies the recommended presets into the config. There is one preset for each different control of the level map: `instruct` (thinking off), `thinking-<effort>` and `thinking` (thinking on, no effort). Some families add `thinking-general`.
+2. It hides the copied presets from `/model`.
+3. It turns on the adaptive alias `<model>@adaptive`. A stored alias name stays.
+
+A stored preset with the same name is replaced. The TUI asks for a second press. Outside the TUI, add `--yes`. Other stored presets stay.
+
+## Presets and aliases
+
+A preset is a named set of thinking values, sampling values, or both. Presets are stored for each base model. A preset never changes the base model or a different alias.
+
+| Model type | Model id | What it sends |
 | --- | --- | --- |
-| `off` | `false` | omitted |
-| `minimal`, `low` | `true` | `low` |
-| `medium` | `true` | `medium` |
-| `high`, `xhigh`, `max` | `true` | `xhigh` |
+| Base model | `<model>` | The recommended defaults of each Pi level, or the switch only |
+| Fixed alias | `<model>@<slug>` | The values of one visible preset |
+| Adaptive alias | `<model>@<alias>` | At each Pi level, the values of the preset that you mapped to that level |
 
-`preserve_thinking` remains `true`. Fixed-thinking profiles intentionally stay locked to their configured state or effort, while profiles containing only sampling values inherit native Shift-Tab behavior.
+All three model types use one function to make the request fields. Thus the three send the same fields for the same preset. Pi merges the fields of the current thinking level into each request. Each alias request goes to the real server model.
 
-### Explicit complete-profile routing
+- A fixed alias with thinking values offers one Pi level only, because its thinking state does not change.
+- A fixed alias with only sampling values keeps the thinking behaviour of the base model at each level.
+- The footer shows `preset: <slug>` for an adaptive alias and `fixed preset: <slug>` for a fixed alias.
 
-Adaptive routing is opt-in and separate from ordinary presets. Creating presets never changes the base model or another alias. In **Thinking & presets**, configure an adaptive alias and explicitly choose a preset for every Pi level. The conventional four-preset helper expands this layout:
+### Adaptive routing
+
+Adaptive routing is opt-in. In **Thinking & presets**, open **Adaptive routing** and select a preset for each of the seven Pi levels. `/discover routing set <source> <modelId> <level> <slug>` sets one level.
+
+The row **Map presets by kind** (`/discover routing conventional`) fills all seven levels from the level map of the model. It needs exactly one preset for each kind that the level map uses. A preset kind is `off`, `on` or an effort name. For Qwen 3.8, the kinds are `off`, `low`, `medium` and `xhigh`:
 
 | Pi level | Selected preset |
 | --- | --- |
-| `off` | instruct/off preset |
-| `minimal`, `low` | low preset |
-| `medium` | medium preset |
-| `high`, `xhigh`, `max` | xhigh preset |
+| `off` | the `off` preset |
+| `minimal`, `low` | the `low` preset |
+| `medium` | the `medium` preset |
+| `high`, `xhigh`, `max` | the `xhigh` preset |
 
-The adaptive alias replaces all profile-controlled sampling fields and `chat_template_kwargs` on every request while retaining the same physical server model and conversation. Multiple presets may use the same reasoning effort because the mapping chooses by preset name rather than inference. The base model, sampling-only aliases, and fixed aliases retain their own behavior.
+A model with only the switch needs one `off` preset and one `on` preset. If a kind has no preset or more than one preset, map the levels manually.
 
-The TUI supports cloning presets, hiding preset aliases from `/model`, editing individual level mappings, previewing exact request payloads, disabling routing while preserving its map, and removing the adaptive alias without deleting presets. The footer shows `preset: <slug>` for an adaptive alias and `fixed preset: <slug>` for a fixed alias.
+More than one preset can use the same effort when you map the levels manually, because the map selects a preset by name.
+
+The TUI can also clone a preset, hide a fixed alias from `/model`, turn the routing off and keep its map, and remove the adaptive alias with no change to the presets.
 
 Example persisted routing:
 
@@ -195,9 +361,9 @@ Example persisted routing:
 }
 ```
 
-## Named profiles
+### Fixed aliases
 
-Presets with `exposeAsModel` omitted or `true` appear as fixed models under the same provider. Set `exposeAsModel: false` to keep a preset available to adaptive routing without cluttering `/model`. Given a server model named `Qwen3.8-27B` and a visible preset named `xhigh`, `/model` shows both:
+Presets with `exposeAsModel` omitted or `true` appear as fixed models under the same provider. Set `exposeAsModel: false` to keep a preset for the adaptive routing only. Given a server model named `Qwen3.8-27B` and a visible preset named `xhigh`, `/model` shows both:
 
 ```text
 Qwen3.8-27B
@@ -236,8 +402,10 @@ The profile request still targets the real server model. For example:
 Supported thinking values are:
 
 - `enable_thinking`: `true` or `false`
-- `reasoning_effort`: `"low"`, `"medium"`, or `"xhigh"`
+- `reasoning_effort`: `"none"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"` or `"max"`
 - `preserve_thinking`: `true` or `false`
+
+The preset editor and `/discover preset set` accept only the values that the model accepts. For example, Qwen 3.8 accepts the efforts `low`, `medium` and `xhigh`.
 
 Supported sampling values are:
 
@@ -255,13 +423,49 @@ The extension translates these backend-neutral storage names to top-level reques
 - `repetition_penalty` for oMLX, vLLM, and SGLang
 - `repetition_penalty` as a best-effort fallback for Ollama and unknown OpenAI-compatible servers
 
-A configured value is sent exactly. Fixed thinking values take precedence over Pi's current `/think` level, while fixed sampling values take precedence over Pi/request defaults. When every thinking value is omitted, the profile inherits the base model's native Shift-Tab behavior; when any thinking value is configured, only that profile's configured thinking keys are sent. Omitted sampling keys are not sent, leaving them to the server/model default. Profiles may contain thinking values, sampling values, or both. The base model remains independently selectable.
+A sampling value of a preset is sent as it is. A sampling key that the preset does not have is not sent, so the server default applies. A thinking value is sent only when the model accepts it.
 
-Sampling support still depends on the target server. In particular, Ollama's current OpenAI-compatible chat endpoint does not expose `top_k`, `min_p`, or a dedicated repetition-penalty field and may ignore those fallback keys. Omit unsupported controls to retain that backend's defaults.
+- A preset with a thinking value sends only its own thinking keys. The Pi thinking level does not change them.
+- A preset with no thinking value sends the thinking values of the base model for the current Pi level.
+- A stored preset that is not valid stays in the file. It is not registered, and `/discover doctor` lists it.
+
+### Servers
+
+oMLX, llama.cpp, vLLM, SGLang and other OpenAI-compatible servers get the thinking values in `chat_template_kwargs`.
+
+Ollama and LM Studio get a top-level `reasoning_effort` and no `chat_template_kwargs`. Thinking off is `reasoning_effort: "none"`. This path is not tested on a live Ollama server or a live LM Studio server.
+
+Sampling support depends on the server. The OpenAI-compatible chat endpoint of Ollama does not have `top_k`, `min_p` or a repetition-penalty field, and can ignore those keys. Do not set a control that the server does not support.
 
 If Pi has an `enabledModels` scope, press **Tab** in `/model` to switch from scoped models to all models, or add the profile alias to `enabledModels`.
 
 Profiles are retained if a model temporarily disappears during a re-scan.
+
+## Family data updates
+
+The family data has two layers:
+
+- The bundled files in `families/` of the package.
+- The cache file `model-discovery-families.json` in the Pi agent directory, next to `model-discovery.json`.
+
+The extension uses the cache only when it is valid and its `revision` is higher than the bundled `revision`.
+
+- At each start, the extension reads new family data in the background. It does this at most one time each 24 hours. The start does not wait for it. New data applies at the next start or reload.
+- The data comes from `https://raw.githubusercontent.com/Maheidem/model-discovery/main/families/`.
+- `/discover families update` or the row **Update model family data** reads the data now. It then registers every source again from its cached catalogue.
+- `PI_MODEL_DISCOVERY_NO_FAMILY_UPDATE=1` turns the automatic read off. `/discover families update` still works.
+- `PI_MODEL_DISCOVERY_FAMILIES_URL` sets a different base URL.
+- A downloaded family file that fails validation is ignored. The bundled file with the same name replaces it. `/discover doctor` lists each rejected file.
+- A failed download changes nothing.
+- An index with an unknown `schemaVersion` is refused. A family file with an unknown key is rejected. Thus a new control type needs a new package release.
+
+## Debug
+
+Set `PI_MODEL_DISCOVERY_WIRE_LOG=<file>` to record what the extension sends. The extension appends one JSON line to the file for each request.
+
+- The line has the time, the provider, the Pi model id, the thinking level, and the number of messages, images and tools.
+- The field `request` holds the request body with no `messages` and no `tools`. It shows the server model, the sampling fields and the thinking fields.
+- The line has no message text and no API key.
 
 ## Tool-schema repair (local endpoints)
 
@@ -353,7 +557,7 @@ If this JSON is corrupt, startup falls back to an empty source list and preserve
 
 ## Requirements
 
-- Pi coding agent **0.84.0 or newer** (`samplingParams` support is required for model aliases)
+- Pi coding agent **1.6.0 or newer**. The extension uses `samplingParamsByThinkingLevel`, which Pi merges into each request.
 - TUI mode for interactive enrollment, masked credentials, and profile editing
 - Network access to an OpenAI-compatible model server for live discovery (cached status/configuration remains available offline)
 
@@ -368,7 +572,7 @@ npm run test:e2e   # live pi against fake local servers (tests/offline.e2e.ts)
 npm pack --dry-run
 ```
 
-`prepack` runs strict typechecking and the complete offline suite automatically. Provider detection, enrichment, profile semantics, routing, schema repair, storage, application actions, panel builders, command modes, and adapter registration all have regression coverage.
+`prepack` runs strict typechecking and the complete offline suite automatically. Provider detection, enrichment, family files, the level map, profile semantics, routing, schema repair, storage, application actions, panel builders, command modes, and adapter registration all have regression coverage.
 
 ## License
 
