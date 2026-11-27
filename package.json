@@ -37,6 +37,7 @@
   "scripts": {
     "test": "node tests/run.mjs",
     "test:e2e": "node --test --test-concurrency=1 --test-timeout=120000 tests/offline.e2e.ts",
+    "test:live": "tests/live/run.sh",
     "typecheck": "tsc -p tsconfig.json",
     "prepack": "npm run typecheck && npm test"
   },

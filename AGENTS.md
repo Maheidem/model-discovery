@@ -10,6 +10,7 @@ npm run typecheck          # tsc, strict, noEmit
 npm test                   # all tests/**/*.test.* files, no live pi
 npm test -- "atomic"       # only tests whose name matches the pattern
 npm run test:e2e           # tests/offline.e2e.ts: a real `pi` binary against fake local servers
+npm run test:live          # tests/live/run.sh: the live matrix, a real `pi` TUI against the real servers
 npm pack --dry-run         # show the packed file list
 ```
 
@@ -18,6 +19,7 @@ npm pack --dry-run         # show the packed file list
 - The runner starts each test file in its own `node --test` child with a temporary `HOME`. Do not run `node --test tests/<file>` directly. That run uses the real `HOME`, and `storage.ts` writes to `~/.pi/agent/model-discovery.json`.
 - Each argument after `--` is a `--test-name-pattern` filter. The runner still starts every file. `PI_PANEL_KIT_TEST_TIMEOUT_MS` changes the timeout for each file.
 - `prepack` runs `typecheck` and `test`.
+- `npm run test:live` takes about 40 minutes and loads models on the real servers. `-- --list` prints the rows and the preflight result and runs nothing. `-- --only tag,tag` runs some rows. The skill `.claude/skills/live-matrix/SKILL.md` has the rules.
 - To try a change in a real pi: `pi --no-extensions -e extensions/index.ts --list-models <provider>`.
 - Schema-repair checks against a live server: `node --experimental-strip-types scripts/live-schema-repair-check.ts http://HOST` and `scripts/bisect-grammar.ts http://HOST MODEL FILTER`.
 
@@ -96,7 +98,7 @@ The family cache file is `model-discovery-families.json` in the same directory (
 - Change a family value in `families/*.json`, and increase `revision` in `families/index.json`. `npm test` validates each family file. `docs/model-families.md` has the steps and the source of each value.
 - A push of family data to `main` reaches every install in 24 hours or less. Run `npm test` before the push.
 - A new control type in a family file needs a release. The validator of an older version refuses a file with an unknown key.
-- Put all tests in `tests/`. `npm test` runs `tests/run.mjs` and never starts a live pi. The live-pi test is `tests/offline.e2e.ts` (`npm run test:e2e`).
+- Put all tests in `tests/`. `npm test` runs `tests/run.mjs` and never starts a live pi. The live-pi test is `tests/offline.e2e.ts` (`npm run test:e2e`). The live matrix is `tests/live/` (`npm run test:live`).
 - `package.json` `files` is the list of packed files. It includes `families/`. There is no `.npmignore`.
 - Keep `.planning/` out of git.
 
@@ -121,10 +123,15 @@ Moved from the pi-coder-management workspace on 2026-11-26. Since 0.10.0 the run
 
 ## Live test
 
+- One command runs the live matrix: `npm run test:live` (`tests/live/run.sh`). The rows are in `tests/live/matrix.json`.
+- The harness gives pi a temporary agent folder (`PI_CODING_AGENT_DIR=<run>/agent`) with a copy of the config. It never writes `~/.pi/agent`. It compares the SHA-256 of the real config and the real pi settings before and after the run.
+- pi starts with `--no-extensions -e extensions/index.ts`. Only this extension is loaded.
+- The output is in `.live-matrix/<date-time>/` (not in git): `evidence.html`, `result.json`, `run.log`. The exit code is 0 only when each check passes.
+- `tests/live/expected.mjs` computes the expected values of a row from the family files and the server report, with the code of the extension. A logic error of the level map shows in `npm test`, not in the live matrix.
 - Do not navigate panels in the real pi with keys that you did not check.
 - On 2026-11-27 a script sent Down and Enter with no check of the cursor row. It changed stored model settings. The config was restored from a backup.
 - Use typed `/discover` verbs for a live test.
-- If a panel is necessary, read the cursor row before each key.
+- If a panel is necessary, read the cursor row before each key (`open_model` and `goto_row` in `tests/live/lib.sh`).
 - Set `PI_MODEL_DISCOVERY_WIRE_LOG=<file>` to see the request fields that the extension controls.
 
 ## Reference

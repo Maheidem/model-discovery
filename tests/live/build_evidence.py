@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""Build one self-contained HTML evidence page from the live-test output in ./ev.
+"""Build one self-contained HTML evidence page from the output of one live test run.
 
-Usage: python3 build_evidence.py
-Input:  <this folder>/ev/   (read only)
-Output: <this folder>/evidence.html
+Usage:  python3 build_evidence.py <run folder>
+        python3 build_evidence.py --row <tag> <run folder>    print the verdict of one row as JSON; write no file
+        python3 build_evidence.py --row other <run folder>    the same for the other live cases
+Input:  <run folder>/run.json            the rows and the source rules of the run (run.sh writes it)
+        <run folder>/ev/                 the evidence files (read only)
+        <run folder>/ev/<tag>.expected.json   the expected values of a row (expected.mjs writes it)
+        <run folder>/ev-first-try/       the first image answer, when the image step ran two times
+Output: <run folder>/evidence.html and <run folder>/result.json
+Exit code: 0 when each check passes. 1 when a check fails, has no data, or a row did not run.
+           With --row, the same rule applies to that row only.
 """
 import datetime
 import glob
@@ -16,94 +23,69 @@ import sys
 # ---------------------------------------------------------------- constants
 # Fill this list by hand. Each item is one sentence.
 NOT_COVERED = [
-    "Desktop (llama-swap): only the model list. No request was sent, because no model may be loaded there in these tests. The llama.cpp settings maxTokensField and supportsStore were not checked for the same reason.",
+    "A source with the rule listOnly: only the model list. No request goes to that source, because no model may be loaded there in these tests. The llama.cpp settings maxTokensField and supportsStore are not checked for the same reason.",
     "Ollama and LM Studio: the top-level reasoning_effort rule has unit tests only. No live server of these types exists here.",
     "The server log shows that a request arrived and how many tokens it made. It does not show the chat_template_kwargs. The wire log of pi is the source for those values.",
-    "mac-m3, Gemma 4, image case: the run used pi with tools off, so that the OCR extension did not load a second model on that server.",
-    "Inkling 2 Mini at level off sends reasoning_effort none. The model card says that some reasoning can still appear.",
-    "The panel shows v0.10.0 in the pictures. The version number changes to 0.11.0 only after these tests.",
+    "A model with no enable_thinking switch sends its lowest effort at level off. Some reasoning can still appear. The page shows the number of thinking characters as information.",
+    "The expected wire values come from the code of the extension. A logic error of the level map shows in npm test, not on this page.",
 ]
 
-VERSION = os.environ.get("LIVE_MATRIX_VERSION", "0.11.0")
 MAX_BYTES = 14 * 1024 * 1024
-HERE = os.environ["LIVE_MATRIX_DIR"]  # the work folder of the run
+ARGS = sys.argv[1:]
+ROW = None  # --row <tag>: evaluate one row only ("other" = the other live cases)
+if "--row" in ARGS:
+    _i = ARGS.index("--row")
+    if _i + 1 >= len(ARGS):
+        sys.exit("usage: build_evidence.py [--row <tag>] <run folder>")
+    ROW = ARGS[_i + 1]
+    del ARGS[_i:_i + 2]
+HERE = os.path.abspath(ARGS[0] if ARGS else os.environ.get("LIVE_MATRIX_DIR", "."))  # the run folder
 EV = os.path.join(HERE, "ev")
 OUT = os.path.join(HERE, "evidence.html")
+RESULT = os.path.join(HERE, "result.json")
 EV_OTHER = os.path.join(EV, "other")
 EV_FIRST = os.path.join(HERE, "ev-first-try")
 NOT_CHAT_RE = re.compile(r"asr|rerank|embed|tts|aligner|markitdown", re.I)
-OTHER_CASES = [("list", "Model list: chat models only"), ("desktop", "Desktop model list"), ("hidden", "Hidden model row"),
-               ("config", "Config: no loss"), ("families", "Family data update")]
+OTHER_CASES = [("list", "Model list: chat models only"), ("listonly", "List-only sources"), ("hidden", "Hidden model row"),
+               ("realconfig", "Real config: no change"), ("families", "Family data update")]
 
 ALL_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
-SAMPLING_KEYS = ["temperature", "top_p", "top_k", "min_p", "presence_penalty"]
-
-_QWEN_OFF = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5}
-_QWEN_ON = {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "presence_penalty": 0}
-_Q38_OFF = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0, "presence_penalty": 1.5}
-_Q38_ON = {"temperature": 1, "top_p": 0.95, "top_k": 20, "min_p": 0, "presence_penalty": 0}
-_GEMMA = {"temperature": 1, "top_p": 0.95, "top_k": 64}
+SAMPLING_KEYS = ["temperature", "top_p", "top_k", "min_p", "presence_penalty", "frequency_penalty",
+                 "repetition_penalty", "repeat_penalty"]
+THINKING_KEYS = ("chat_template_kwargs", "reasoning_effort")
 
 
-def _q38(efforts):
-    d = {"off": {"kwargs": {"enable_thinking": False, "preserve_thinking": True}, "sampling": _Q38_OFF}}
-    for lvl, eff in zip(ALL_LEVELS[1:], efforts):
-        d[lvl] = {"kwargs": {"enable_thinking": True, "reasoning_effort": eff, "preserve_thinking": True},
-                  "sampling": _Q38_ON}
-    return d
+def _read_json(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
 
 
-# Expected values for each family.
-#   label: the text that the panel "family:" line must name.
-#   levels: the offered thinking levels, in order.
-#   wire: for each level, the expected request.chat_template_kwargs and the expected sampling fields.
-#   top_level_effort_absent: the request must have no top-level reasoning_effort field.
-#   off_thinking_can_show: at level off the session can hold thinking text (show the number, no fail).
-EXPECTED = {
-    "gemma4": {
-        "label": "Gemma 4", "levels": ["off", "high"], "top_level_effort_absent": True,
-        "wire": {"off": {"kwargs": {"enable_thinking": False}, "sampling": _GEMMA},
-                 "high": {"kwargs": {"enable_thinking": True}, "sampling": _GEMMA}},
-    },
-    "qwen35": {
-        "label": "Qwen 3.5", "levels": ["off", "high"], "top_level_effort_absent": True,
-        "wire": {"off": {"kwargs": {"enable_thinking": False}, "sampling": _QWEN_OFF},
-                 "high": {"kwargs": {"enable_thinking": True}, "sampling": _QWEN_ON}},
-    },
-    "qwen36": {
-        "label": "Qwen 3.6", "levels": ["off", "high"], "top_level_effort_absent": True,
-        "wire": {"off": {"kwargs": {"enable_thinking": False, "preserve_thinking": True}, "sampling": _QWEN_OFF},
-                 "high": {"kwargs": {"enable_thinking": True, "preserve_thinking": True}, "sampling": _QWEN_ON}},
-    },
-    "qwen38": {
-        "label": "Qwen 3.8", "levels": ALL_LEVELS,
-        "wire": _q38(["low", "low", "medium", "xhigh", "xhigh", "xhigh"]),
-    },
-    "qwen38flash": {
-        "label": "Qwen 3.8", "levels": ALL_LEVELS,
-        "wire": _q38(["low", "low", "medium", "high", "xhigh", "xhigh"]),
-    },
-    "inkling2mini": {
-        "label": "Inkling 2 Mini", "levels": ALL_LEVELS, "off_thinking_can_show": True,
-        "wire": {lvl: {"kwargs": {"reasoning_effort": eff}, "sampling": {"temperature": 1}}
-                 for lvl, eff in zip(ALL_LEVELS, ["none", "minimal", "low", "medium", "high", "xhigh", "max"])},
-    },
-}
+# run.json: {"version", "rows": [{"tag", "source", "model"}], "sources": {name: {"host", "listOnly", ...}},
+#            "notRun": {tag: reason}, "hiddenModel": {"source", "model"}}
+RUN = _read_json(os.path.join(HERE, "run.json")) or {}
+VERSION = str(RUN.get("version") or "?")
+SOURCES = RUN.get("sources") if isinstance(RUN.get("sources"), dict) else {}
+NOT_RUN = RUN.get("notRun") if isinstance(RUN.get("notRun"), dict) else {}
 
 
-def family_of(model_id):
-    m = (model_id or "").lower()
-    if "gemma" in m:
-        return "gemma4"
-    if "inkling" in m:
-        return "inkling2mini"
-    if re.search(r"qwen3[.\-_]?8", m):
-        return "qwen38flash" if "flash" in m else "qwen38"
-    if re.search(r"qwen3[.\-_]?6", m):
-        return "qwen36"
-    if re.search(r"qwen3[.\-_]?5", m):
-        return "qwen35"
-    return None
+def load_expected(tag):
+    """The expected values of a row. expected.mjs computes them with the code of the extension."""
+    v = _read_json(os.path.join(EV, tag + ".expected.json"))
+    return v if isinstance(v, dict) else None
+
+
+def exp_level(exp, lvl):
+    """The expected request fields of the base model at one level: kwargs, sampling, top-level effort."""
+    params = ((exp or {}).get("baseLevelParams") or {}).get(lvl)
+    if not isinstance(params, dict):
+        return None
+    kwargs = params.get("chat_template_kwargs")
+    return {"kwargs": kwargs if isinstance(kwargs, dict) else {},
+            "sampling": {k: v for k, v in params.items() if k not in THINKING_KEYS},
+            "effort": params.get("reasoning_effort")}
 
 
 CASES = [("panel", "Panel"), ("auto", "Automatic defaults"), ("customize", "Customize"), ("edit", "Edit"),
@@ -124,9 +106,10 @@ _PATH_RES = [
     (re.compile(r"(?:/private)?/tmp/claude-\d+/[^\s\"'&<]*"), "[scratch]"),   # a path that was cut short
     (re.compile(r"/(?:Users|home)/[A-Za-z0-9._-]+"), "~"),
 ]
-_MASK_RES = [
-    (re.compile(re.escape(os.environ.get("LIVE_MATRIX_M3_HOST", "mac-m3.invalid")) + r"(?::\d+)?"), "mac-m3"),
-    (re.compile(r"127\.0\.0\.1:8123"), "local-mac"),
+# The host of each source changes to the source name. run.json gives the hosts.
+_HOSTS = sorted(((str(v.get("host")), name) for name, v in SOURCES.items() if isinstance(v, dict) and v.get("host")),
+                key=lambda x: -len(x[0]))
+_MASK_RES = [(re.compile(re.escape(host) + ("" if ":" in host else r"(?::\d+)?")), name) for host, name in _HOSTS] + [
     (re.compile(r"(?<![\d.])\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?![\d.])"), "[ip]"),
     (re.compile(r"(Bearer)(\s+|&#160;)[^\s\"'<&]+", re.I), r"\1\2***"),
     (re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_\-]{8,}"), "sk-***"),
@@ -326,8 +309,11 @@ def load_tag(tag):
         for w in (d["wire"].get("auto") or []):
             d["provider"], d["model"] = w.get("provider"), (w.get("request") or {}).get("model") or w.get("piModel")
             break
-    d["family"] = family_of(d["model"])
-    d["exp"] = EXPECTED.get(d["family"])
+    row = next((r for r in RUN.get("rows") or [] if r.get("tag") == tag), {})
+    d["provider"], d["model"] = d["provider"] or row.get("source"), d["model"] or row.get("model")
+    d["exp"] = load_expected(tag)
+    d["family"] = (d["exp"] or {}).get("familyId")
+    d["why_not_run"] = NOT_RUN.get(tag)
     d["offered"] = [lvl for _, lvl, _ in level_lines(log["sections"].get("1"))]
     cfgs = json_lines(log["sections"].get("3"), "presets")
     d["cfg"] = cfgs[0] if cfgs else None
@@ -344,16 +330,23 @@ def case_panel(d):
     fam = next((r for r in rows if r.startswith("family:")), None)
     think = next((r for r in rows if r.startswith("thinking:")), None)
     vis = next((r for r in rows if "Vision (image input)" in r), None)
-    label = exp["label"] if exp else None
+    rea = next((r for r in rows if re.match(r"^(›\s*)?Reasoning\s{2,}", r)), None)
+    label = exp.get("familyLabel") if exp else None
+    if exp is None:
+        return [chk("expected values of the row", "the file <tag>.expected.json", "no expected values", None, "expected.mjs")], "?", "no expected values"
+    squeeze = lambda r: re.sub(r"\s{2,}", "  ", re.sub(r"^›\s*", "", r)) if r else None
+    want_fam = "family: %s (%s)" % (label, "your setting" if exp.get("familySource") == "your setting" else "name") if label else "family: none"
+    want_think = "from %s" % exp.get("thinkingSource") if exp.get("thinkingSource") else "thinking: none"
+    want_rea = "Reasoning  %s (%s)" % ("on" if exp.get("reasoning") else "off", exp.get("reasoningSource"))
+    want_vis = "Vision (image input)  %s (%s)" % ("yes" if exp.get("vision") else "no", exp.get("visionSource"))
     checks = [
-        chk("family line names the family", "family: %s …" % label if label else "unknown family (no expected values)",
-            fam or "no family line", bool(fam and label and label.lower() in fam.lower()), src),
-        chk("thinking line ends with 'from server'", "thinking: … from server", think or "no thinking line",
-            bool(think and think.endswith("from server")), src),
+        chk("family line names the family and its source", want_fam + " …", fam or "no family line",
+            bool(fam and fam.startswith(want_fam)), src),
+        chk("thinking line names the source of the thinking profile", "thinking: … " + want_think if exp.get("thinkingSource") else want_think,
+            think or "no thinking line", bool(think and (think.endswith(want_think) if exp.get("thinkingSource") else think == want_think)), src),
+        chk("Reasoning row: value and source", want_rea, squeeze(rea) or "no Reasoning row", squeeze(rea) == want_rea, src),
+        chk("Vision row: value and source", want_vis, squeeze(vis) or "no Vision row", squeeze(vis) == want_vis, src),
     ]
-    m = re.search(r"Vision \(image input\)\s+(\S.*?)\s*[\(\[]([^\)\]]+)[\)\]]\s*$", vis or "")
-    checks.append(chk("Vision row has a value and a source", "Vision (image input) <value> (<source>)",
-                      re.sub(r"\s{2,}", "  ", vis) if vis else "no Vision row", bool(m), src))
     ver = next((re.search(r"Model Discovery v(\S+)", r).group(1) for r in rows if "Model Discovery v" in r), None)
     checks.append(chk("version that the panel shows (information)", VERSION, ver or "not shown", "info", src))
     return checks, label or "?", (fam or "no family line").replace("family:", "").strip()
@@ -362,6 +355,15 @@ def case_panel(d):
 def auto_lines(d):
     base = d["model"]
     return [w for w in (d["wire"].get("auto") or []) if w.get("piModel") == base]
+
+
+def line_at(lines, level):
+    """The first wire line at a thinking level. One turn can make two requests (a tool call or a retry),
+    so the position of a line in the file does not give its level."""
+    for w in lines or []:
+        if w.get("thinkingLevel") == level:
+            return w
+    return None
 
 
 def coding_turns(d, role):
@@ -392,9 +394,11 @@ def case_auto(d):
     if not wire and not d["offered"]:
         return None
     checks = []
-    exp_levels = exp["levels"] if exp else None
+    exp_levels = exp.get("offeredLevels") if exp else None
     offered = d["offered"]
-    checks.append(chk("offered levels", ", ".join(exp_levels) if exp_levels else "unknown family (no expected values)",
+    slugs = (exp or {}).get("levelSlugs") or {}
+    foots = {lvl: foot for _, lvl, foot in level_lines(log["sections"].get("1"))}
+    checks.append(chk("offered levels", ", ".join(exp_levels) if exp_levels else "no expected values",
                       ", ".join(offered) if offered else ("no level line in the run log" if log["present"] else "no run log"),
                       (offered == exp_levels) if (offered and exp_levels) else (None if not log["present"] else False),
                       "run log, automatic defaults section"))
@@ -403,24 +407,29 @@ def case_auto(d):
     turns = coding_turns(d, "auto")
     wsrc, ssrc = "wire log of the base model run", "session file of the base model run"
     for i, lvl in enumerate(levels):
-        want = (exp or {}).get("wire", {}).get(lvl)
-        line = lines[i] if i < len(lines) else None
+        want = exp_level(exp, lvl)
+        line = line_at(lines, lvl)
         if want is None:
             checks.append(chk("level %s: expected values" % lvl, "level is in the expected list", "no expected values for this level", False, wsrc))
         else:
             checks += wire_checks("level %s" % lvl, line, lvl, want["kwargs"], want["sampling"], wsrc)
-            if exp.get("top_level_effort_absent") and line is not None:
+            if line is not None:
                 re_top = (line.get("request") or {}).get("reasoning_effort")
-                checks.append(chk("level %s: top-level reasoning_effort" % lvl, "absent",
-                                  "absent" if re_top is None else j(re_top), re_top is None, wsrc))
+                checks.append(chk("level %s: top-level reasoning_effort" % lvl, "absent" if want["effort"] is None else j(want["effort"]),
+                                  "absent" if re_top is None else j(re_top), same(want["effort"], re_top), wsrc))
+            if slugs.get(lvl) and lvl in foots:
+                want_foot = "defaults: %s · %s" % (exp.get("familyLabel") or "server profile", slugs[lvl])
+                checks.append(chk("level %s: footer shows the defaults" % lvl, want_foot, foots[lvl] or "no footer text",
+                                  foots[lvl] == want_foot, "run log, automatic defaults section"))
         # thinking characters in the session file
         if turns is None or i >= len(turns) or not turns[i]["assistants"]:
             checks.append(chk("level %s: thinking characters" % lvl, "0" if lvl == "off" else "> 0", "no session data", None, ssrc))
         else:
             n = sum(a["thinking"] for a in turns[i]["assistants"])
-            if lvl == "off" and exp and exp.get("off_thinking_can_show"):
+            # A model with no enable_thinking switch sends its lowest effort at level off.
+            if lvl == "off" and exp and isinstance(exp.get("thinking"), dict) and exp["thinking"].get("toggle") is False:
                 checks.append(chk("level off: thinking characters (information)",
-                                  "any number (off sends 'none'; the model card says that some reasoning can still appear)",
+                                  "any number (the model has no thinking switch; level off sends the lowest effort)",
                                   str(n), "info", ssrc))
             else:
                 checks.append(chk("level %s: thinking characters" % lvl, "0" if lvl == "off" else "> 0", str(n),
@@ -433,7 +442,7 @@ def case_auto(d):
     checks.append(chk("error text on the automatic-defaults screens", "0 lines", "%d lines" % len(hits) + ("".join("\n" + h for h in hits[:8])),
                       not hits, "screen texts auto-<level> of the base model run"))
     if d["server"] is None:
-        checks.append(chk("error text in the server lines", "0 lines", "server lines not collected", "info", "server log lines"))
+        checks.append(chk("error text in the server lines", "0 lines", "server lines not collected", None, "server log lines"))
     else:
         sh = [ln.strip()[:240] for ln in d["server"].splitlines() if ERROR_RE.search(ln)]
         checks.append(chk("error text in the server lines", "0 lines", "%d lines" % len(sh) + "".join("\n" + h for h in sh[:8]),
@@ -454,7 +463,20 @@ def case_customize(d):
                       "no config line in the run log" if cfg is None else "presets %d, routing enabled = %s" % (n_presets, j(routing.get("enabled"))),
                       (n_presets > 0 and routing.get("enabled") is True) if cfg is not None else (None if not log["present"] else False),
                       "run log, customize section"))
-    levels = d["offered"] or ((d["exp"] or {}).get("levels") or [])
+    exp = d["exp"] or {}
+    if cfg is not None and exp.get("presets") is not None:
+        # The stored order depends on the presets that the model had before. Compare each bundled preset by its slug.
+        strip = lambda ps: {str(p.get("slug")): {k: p.get(k) for k in ("chatTemplateKwargs", "sampling") if p.get(k) is not None}
+                            for p in ps if isinstance(p, dict)} if isinstance(ps, list) else {}
+        want_p, have_p = strip(exp["presets"]), strip(presets)
+        have_same = {k: v for k, v in have_p.items() if k in want_p}
+        other = sorted(k for k in have_p if k not in want_p)
+        checks.append(chk("each bundled preset of the family is in the config with the same values", j(want_p),
+                          j(have_same) + ("\nother stored presets: %s" % ", ".join(other) if other else ""),
+                          same(want_p, have_same), "run log, customize section"))
+        checks.append(chk("the routing levels are the bundled level slugs", j(exp.get("levelSlugs")), j(routing.get("levels")),
+                          same(exp.get("levelSlugs"), routing.get("levels")), "run log, customize section"))
+    levels = d["offered"] or (exp.get("offeredLevels") or [])
     base_lines = auto_lines(d)
     adapt = d["wire"].get("adapt")
     wsrc = "wire log of the adaptive alias run"
@@ -462,11 +484,12 @@ def case_customize(d):
         if adapt is None:
             checks.append(chk("level %s: wire line" % lvl, "same as the base model run", "no wire log", None, wsrc))
             continue
-        if i >= len(base_lines):
+        base = line_at(base_lines, lvl)
+        if base is None:
             checks.append(chk("level %s: wire line" % lvl, "same as the base model run", "no base model wire line to compare", None, wsrc))
             continue
-        breq = base_lines[i].get("request") or {}
-        checks += wire_checks("level %s" % lvl, adapt[i] if i < len(adapt) else None, lvl, kwargs_of(breq), sampling_of(breq),
+        breq = base.get("request") or {}
+        checks += wire_checks("level %s" % lvl, line_at(adapt, lvl), lvl, kwargs_of(breq), sampling_of(breq),
                               wsrc, " (expected = base model run)")
     lv = [(lvl, foot) for start, lvl, foot in level_lines(log["sections"].get("3")) if not start]
     if not lv:
@@ -835,9 +858,11 @@ def model_section(d, res, reduced):
     title = "%s/%s" % (d["provider"] or "?", d["model"] or "?")
     out = ['<h2 id="%s">%s — %s</h2>' % (aid(tag), e(tag), e(title))]
     log = d["log"]
-    fam = d["family"] or "unknown (no expected values)"
+    fam = d["family"] or ("none" if d["exp"] else "no expected values")
     out.append('<p class="muted">Family for the expected values: %s. Start: %s. End: %s.</p>'
                % (e(fam), e(log["start"] or "not recorded"), e(log["end"] or "not recorded")))
+    if d.get("why_not_run"):
+        out.append('<div class="banner">This row did not run. Reason: %s</div>' % e(d["why_not_run"]))
     if not log["present"]:
         out.append('<div class="banner">The run log is absent. Checks that need the run log show "not run".</div>')
     elif not log["end"]:
@@ -889,7 +914,7 @@ def other_cases():
     # A + B: the model list
     txt = rd("list-models.txt")
     if txt is None:
-        res["list"] = res["desktop"] = None
+        res["list"] = res["listonly"] = None
     else:
         rows = [ln.split() for ln in txt.splitlines() if len(ln.split()) >= 2 and ln.split()[0].lower() != "provider"]
         per = {}
@@ -903,22 +928,32 @@ def other_cases():
                   "%d such line(s) in %d line(s)%s. Lines per provider: %s" % (len(bad), len(rows), "".join("\n" + b for b in bad), counts),
                   bool(rows) and not bad, src)]
         res["list"] = (ca, "0 models that are not chat models", "%d (%s)" % (len(bad), counts))
-        desk = [ln.rstrip() for ln in txt.splitlines() if ln.startswith("Desktop")]
-        cb = [chk("Desktop (llama-swap) lists its models with no model load", "≥ 1 line that starts with Desktop",
-                  "%d line(s)" % len(desk), bool(desk), src)]
-        res["desktop"] = (cb, "≥ 1 Desktop line", "%d Desktop line(s)" % len(desk))
-        extra["desktop"] = "<details><summary>Desktop lines (%d)</summary><pre>%s</pre></details>" % (len(desk), e("\n".join(desk)))
+        list_only = sorted(name for name, v in SOURCES.items() if isinstance(v, dict) and v.get("listOnly"))
+        cb, shown = [], []
+        for name in list_only:
+            lines = [ln.rstrip() for ln in txt.splitlines() if ln.split()[:1] == [name]]
+            shown += lines
+            cb.append(chk("%s lists its models; the run sends no request to it" % name, "≥ 1 line that starts with %s" % name,
+                          "%d line(s)" % len(lines), bool(lines), src))
+        if not list_only:
+            cb.append(chk("list-only sources (information)", "a source with the rule listOnly", "no source has this rule", "info", "matrix file"))
+        res["listonly"] = (cb, "≥ 1 line for each list-only source", "%d line(s) for %d source(s)" % (len(shown), len(list_only)))
+        extra["listonly"] = "<details><summary>Lines of the list-only sources (%d)</summary><pre>%s</pre></details>" % (len(shown), e("\n".join(shown)))
     # C: hidden row
     row = rd("hidden-row.txt")
+    hid = RUN.get("hiddenModel") if isinstance(RUN.get("hiddenModel"), dict) else None
     pics = [n for n in ("hidden-row", "hidden-model") if os.path.isfile(os.path.join(EV_OTHER, n + ".svg"))]
-    if row is None and not pics:
-        res["hidden"] = None
+    if hid is None:
+        res["hidden"] = ([chk("hidden model (information)", "a hiddenModel entry in the matrix file", "no entry", "info", "matrix file")],
+                         "no hidden model in the matrix", "no hidden model in the matrix")
     else:
-        line = next((re.sub(r"^[│\s]+|[│\s]+$", "", ln) for ln in (row or "").splitlines() if "hidden (speech-to-text)" in ln), None)
-        cc = [chk("the source panel row shows the hidden model", "a row with 'hidden (speech-to-text)'",
+        mid = str(hid.get("model"))
+        rows_ = [re.sub(r"^[│\s]+|[│\s]+$", "", ln) for ln in (row or "").splitlines()]
+        line = next((r for r in rows_ if re.match(r"^(›\s*)?" + re.escape(mid) + r" · hidden \(", r)), None)
+        cc = [chk("the source panel row shows the hidden model", "a row '%s · hidden (<kind>)'" % mid,
                   "no screen text" if row is None else (line or "no such row"), None if row is None else bool(line),
                   "source panel screen text")]
-        res["hidden"] = (cc, "hidden (speech-to-text)", "hidden (speech-to-text)" if line else "no such row")
+        res["hidden"] = (cc, "%s · hidden" % mid, "%s · hidden" % mid if line else "no such row")
         h = []
         for n, cap in (("hidden-row", "source panel with the hidden row"), ("hidden-model", "model panel of the hidden model")):
             if n in pics:
@@ -927,36 +962,35 @@ def other_cases():
                 if t:
                     h.append("<details><summary>The same screen as text</summary><pre>%s</pre></details>" % e(t.rstrip()))
         extra["hidden"] = "".join(h)
-    # D: config readback
-    cfg = rd("config-readback.txt")
+    # D: the real config and the real pi settings did not change
+    cfg = rd("real-config.txt")
     if cfg is None:
-        res["config"] = None
+        res["realconfig"] = None
     else:
-        pl = [ln.strip() for ln in cfg.splitlines() if "presets same:" in ln]
-        kl = [ln.strip() for ln in cfg.splitlines() if "apiKey same:" in ln]
-        pbad = [ln for ln in pl if not ln.endswith("presets same: true routing same: true")]
-        kbad = [ln for ln in kl if not re.search(r"apiKey same: true\b", ln)]
-        src = "compare of the config after all tests with the backup from before the work"
-        cd = [chk("presets and routing: no loss", "every 'presets same:' line ends with 'presets same: true routing same: true' (≥ 1 line)",
-                  "%d line(s), %d different%s" % (len(pl), len(pbad), "".join("\n" + b for b in pbad)), bool(pl) and not pbad, src),
-              chk("API key: no change", "every 'apiKey same:' line says true",
-                  "%d line(s), %d different%s" % (len(kl), len(kbad), "".join("\n" + b for b in kbad)), not kbad, src)]
-        res["config"] = (cd, "presets, routing, apiKey same", "%d of %d presets lines same, %d of %d apiKey lines same"
-                         % (len(pl) - len(pbad), len(pl), len(kl) - len(kbad), len(kl)))
-        extra["config"] = ("<pre>%s</pre><p>The three override changes are the ones that the owner approved on 2026-11-27 "
-                           "(remove the stored reasoning and vision settings of the tested models).</p>" % e(cfg.rstrip()))
+        lines = [ln.strip() for ln in cfg.splitlines() if " before: " in ln]
+        bad = [ln for ln in lines if not ln.endswith("same: true")]
+        src = "SHA-256 of the real files before the run and after the last pi session"
+        cd = [chk("the real config file and the real pi settings file did not change",
+                  "2 lines, each ends with 'same: true'", "%d line(s), %d different%s" % (len(lines), len(bad), "".join("\n" + b for b in bad)),
+                  len(lines) == 2 and not bad, src)]
+        res["realconfig"] = (cd, "2 files same", "%d of %d files same" % (len(lines) - len(bad), len(lines)))
+        extra["realconfig"] = ("<pre>%s</pre><p>pi ran with a temporary agent folder. The lines show the first 12 characters of each hash.</p>" % e(cfg.rstrip()))
     # E: family data update
     upd, verbs = rd("families-update.txt"), rd("families-verbs.txt")
     if upd is None and verbs is None:
         res["families"] = None
     else:
         a_same, a_rej = "ALL SAME: true" in (upd or ""), "rejected: []" in (upd or "")
-        ce = [chk("family data update from GitHub", "ALL SAME: true and rejected: []",
+        v_upd = bool(re.search(r"Family data update: (updated|not-modified)", verbs or ""))
+        ce = [chk("the typed command reports an update", "Family data update: updated (or not-modified)",
+                  "no screen text" if verbs is None else next((ln.strip() for ln in verbs.splitlines() if "Family data update:" in ln), "no such line"),
+                  None if verbs is None else v_upd, "screen text after /discover families update"),
+              chk("the family data cache equals the family files on origin/main", "ALL SAME: true and rejected: []",
                   "no compare text" if upd is None else "ALL SAME: true %s, rejected: [] %s" % ("found" if a_same else "not found", "found" if a_rej else "not found"),
-                  None if upd is None else (a_same and a_rej), "compare of the family data cache with the bundled family files")]
-        res["families"] = (ce, "ALL SAME: true, rejected: []", "ALL SAME %s, rejected [] %s" % ("true" if a_same else "not found", "found" if a_rej else "not found"))
+                  None if upd is None else (a_same and a_rej), "compare of the family data cache with the family files on origin/main")]
+        res["families"] = (ce, "updated, ALL SAME: true, rejected: []", "%s, ALL SAME %s, rejected [] %s" % ("updated" if v_upd else "no update line", "true" if a_same else "not found", "found" if a_rej else "not found"))
         extra["families"] = "".join("<h4>%s</h4><pre>%s</pre>" % (cap, e(t.rstrip())) for cap, t in
-                                    (("Compare of the cache with the bundled files", upd), ("Output of the family data commands", verbs)) if t)
+                                    (("Compare of the cache with the family files on origin/main", upd), ("Screen text after the family data command", verbs)) if t)
     out = {}
     for cid, _ in OTHER_CASES:
         r = res.get(cid)
@@ -965,7 +999,7 @@ def other_cases():
 
 
 def other_section(ores, extra):
-    out = ['<h2 id="other">Other live cases</h2><p class="muted">These cases are not for one model. They use the three sources together.</p>']
+    out = ['<h2 id="other">Other live cases</h2><p class="muted">These cases are not for one model.</p>']
     for cid, cname in OTHER_CASES:
         r = ores[cid]
         out.append('<h3 id="other-%s">%s</h3>' % (cid, e(cname)))
@@ -985,12 +1019,15 @@ def method_section():
     items = "".join("<li>%s</li>" % e(x) for x in NOT_COVERED) or '<li class="muted">No item is recorded.</li>'
     return """<h2 id="method">Method</h2>
 <ol>
-<li>Each case runs in the real pi 1.6.1 terminal interface. A tmux session holds the terminal. The test sends keys and reads the screen.</li>
+<li>Each case runs in the real pi terminal interface. A tmux session holds the terminal. The test sends keys and reads the screen.</li>
+<li>pi runs with a temporary agent folder that holds a copy of the config. The real config and the real pi settings are not written. Only this extension is loaded; no other pi extension runs.</li>
 <li>The switch <code>PI_MODEL_DISCOVERY_WIRE_LOG</code> makes the extension write one JSON line for each request. The line holds the request body without the messages and the tools.</li>
 <li>pi writes a session file for each run. The file holds each assistant message with its thinking text, its text and its tool calls.</li>
 <li>The server log gives the server view of the same requests. The lines are a copy for the time window of the run.</li>
 <li>Each picture is a capture of the terminal screen. The same screen is also saved as text.</li>
 <li>This page compares the expected values with the values in these files. A script computes each "pass" and each "fail". Nobody edits the results by hand.</li>
+<li>The expected wire values are computed from the family files and the server report by the code of the extension. A logic error of the level map shows in <code>npm test</code>, not here.</li>
+<li>These checks do not use the code of the extension: reasoning text is absent at level off and present at the other levels, the image word, the tool call line, no error text in the server log or on the screen, and the wire lines of the adaptive alias equal the wire lines of the base model.</li>
 </ol>
 <h3>The cases</h3>
 <ul>
@@ -1000,50 +1037,20 @@ def method_section():
 <li><b>Customize</b>: copy the recommended presets to the model. Send the same prompt at each level of the adaptive alias.</li>
 <li><b>Edit</b>: set the temperature of the preset for level off to 0.33. Send one prompt at level off.</li>
 <li><b>Fixed alias</b>: show one preset as a fixed model. Send the prompt through the fixed alias.</li>
-<li><b>Image</b>: send a picture with the word ZEBRA42. Then set vision to off and send the picture again.</li>
-</ul>
-<h3>Changes during the session</h3>
-<ul>
-<li>The thinking prompt changed during the session from "reverses a string" to "n-th prime number". The first prompt was too easy to make Gemma 4 think.</li>
-<li>The live tests caused these code fixes:
-<ul>
-<li>The "Show as fixed model" toggle had no effect.</li>
-<li>A preset edit put the thinking level back to the default.</li>
-<li>The routing "enabled" toggle wrote the old state.</li>
-</ul></li>
+<li><b>Image</b>: send a picture with the word ZEBRA42. Then set vision to off and send the picture again. When the first answer has no ZEBRA42, the step runs one more time and the page shows the first answer too.</li>
 </ul>
 <h3 id="not-covered">Not covered</h3>
 <ul>%s</ul>""" % items
 
 
-def discover_tags():
-    tags = []
-    if not os.path.isdir(EV):
-        return tags
-    for name in sorted(os.listdir(EV)):
-        p = os.path.join(EV, name)
-        tag = None
-        if os.path.isfile(p) and name.endswith(".server.log"):
-            tag = name[:-len(".server.log")]
-        elif os.path.isfile(p) and name.endswith(".log"):
-            tag = name[:-4]
-        elif os.path.isdir(p):
-            for role, _ in sorted(ROLES, key=lambda r: -len(r[0])):
-                if name.endswith("-" + role):
-                    tag = name[:-len(role) - 1]
-                    break
-        if tag and tag not in tags:
-            tags.append(tag)
-    order = {}
-    for t in tags:
-        mt = [os.path.getmtime(os.path.join(EV, t + ".log"))] if os.path.isfile(os.path.join(EV, t + ".log")) else []
-        order[t] = parse_log(os.path.join(EV, t + ".log"))["start"] or ("9999" if not mt else "9998")
-    return sorted(tags, key=lambda t: (order[t], t))
+def run_tags():
+    """The rows of the run, in the order of the matrix. run.json gives them."""
+    return [str(r.get("tag")) for r in RUN.get("rows") or [] if isinstance(r, dict) and r.get("tag")]
 
 
 def build(reduced):
     _SVG_IDS.clear()
-    data = [load_tag(t) for t in discover_tags()]
+    data = [load_tag(t) for t in run_tags()]
     results = [run_cases(d) for d in data]
     dates = sorted({d["log"]["start"][:10] for d in data if d["log"]["start"]})
     date = ", ".join(dates) if dates else "not recorded"
@@ -1081,7 +1088,7 @@ def build(reduced):
              "<h1>model-discovery %s — live test evidence</h1>" % VERSION,
              '<p class="muted">Test date: %s. Page built: %s. Each cell shows "expected = actual". Select a cell to see its checks.</p>'
              % (e(date), datetime.datetime.now().strftime("%Y-%m-%d %H:%M")),
-             table(["Model run"] + [c for _, c in CASES], rows, "sum") if rows else '<p class="notrun">No evidence folder has data. All cases: not run.</p>',
+             table(["Model run"] + [c for _, c in CASES], rows, "sum") if rows else '<p class="notrun">The run has no row (run.json is absent or empty). All cases: not run.</p>',
              table(["Other live cases"] + [c for _, c in OTHER_CASES], [orow], "sum"),
              '<p class="totals">%s</p>' % e(totals),
              '<p class="muted">"partial" = some checks of the case have no data and no check fails. Go to: <a href="#method">Method</a>, <a href="#not-covered">Not covered</a>.</p>']
@@ -1093,7 +1100,37 @@ def build(reduced):
     return "".join(parts), data, results, ores, totals
 
 
+def problems_of(tag, cases, res):
+    """The checks of one row that fail or have no data, and the cases that did not run."""
+    problems = []
+    for cid, cname in cases:
+        if res[cid] is None:
+            problems.append({"status": "not run", "row": tag, "case": cname, "check": "the case ran",
+                             "expected": "evidence files of the case", "actual": clean(NOT_RUN.get(tag) or "no evidence file")})
+        for c in (res[cid] or {}).get("checks", []):
+            if c["ok"] is False or c["ok"] is None:
+                problems.append({"status": "fail" if c["ok"] is False else "not run", "row": tag, "case": cname, "check": c["name"],
+                                 "expected": clean(c["expected"]), "actual": clean(c["actual"])})
+    return problems
+
+
+def row_report(tag):
+    """--row: print the verdict of one row as one JSON line. run.sh shows it when the row ends."""
+    if tag == "other":
+        cases, res = OTHER_CASES, other_cases()[0]
+    else:
+        cases, res = CASES, run_cases(load_tag(tag))
+    problems = problems_of(tag, cases, res)
+    print(json.dumps({"row": tag, "ok": not problems,
+                      "cases": [{"id": cid, "name": cname, "status": res[cid]["status"][0] if res[cid] else "notrun"}
+                                for cid, cname in cases],
+                      "problems": problems}, ensure_ascii=False))
+    return 0 if not problems else 1
+
+
 def main():
+    if ROW is not None:
+        return row_report(ROW)
     page, data, results, ores, totals = build(reduced=False)
     reduced = False
     if len(page.encode("utf-8")) > MAX_BYTES:
@@ -1112,17 +1149,29 @@ def main():
     print("\n" + totals)
     print("\nevidence.html: %d bytes (%.2f MB)%s" % (size, size / 1048576.0, ", reduced picture set" if reduced else ""))
     print("\nFailing checks and checks with no data:")
-    n = 0
+    problems = []
     groups = [(d["tag"], CASES, res) for d, res in zip(data, results)] + [("other", OTHER_CASES, ores)]
     for tag, cases, res in groups:
-        for cid, cname in cases:
-            for c in (res[cid] or {}).get("checks", []):
-                if c["ok"] is False or c["ok"] is None:
-                    n += 1
-                    print("- [%s] %s / %s / %s\n    expected: %s\n    actual:   %s" % ("fail" if c["ok"] is False else "not run", tag, cname, c["name"], clean(c["expected"]), clean(c["actual"])))
-    if not n:
+        problems += problems_of(tag, cases, res)
+    if not data:
+        problems.append({"status": "not run", "row": "-", "case": "-", "check": "the run has rows", "expected": "≥ 1 row in run.json", "actual": "no row"})
+    for x in problems:
+        print("- [%s] %s / %s / %s\n    expected: %s\n    actual:   %s" % (x["status"], x["row"], x["case"], x["check"], x["expected"], x["actual"]))
+    if not problems:
         print("- none")
-    return 0
+    cell = lambda r: r["status"][0] if r else "notrun"
+    result = {
+        "ok": not problems, "version": VERSION, "built": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "totals": totals,
+        "rows": {d["tag"]: {"source": d["provider"], "model": d["model"], "notRunReason": d.get("why_not_run"),
+                            "cases": {cid: cell(res[cid]) for cid, _ in CASES}} for d, res in zip(data, results)},
+        "other": {cid: cell(ores[cid]) for cid, _ in OTHER_CASES},
+        "problems": problems,
+    }
+    with open(RESULT, "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    print("\nresult.json: %s" % ("all checks pass" if not problems else "%d problem(s)" % len(problems)))
+    return 0 if not problems else 1
 
 
 if __name__ == "__main__":

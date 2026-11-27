@@ -1,12 +1,16 @@
 #!/bin/zsh
 # run_model.sh <tag> <provider> <model> : all live cases of one model. Output goes to ev/<tag>*/ and stdout.
-source "$(dirname "$0")/lib.sh"
+# run.sh starts this script. It sets LIVE_MATRIX_DIR (the run folder) and IMGFLAGS (more pi arguments for the image step).
+source "${0:A:h}/lib.sh"
 T=$1; P=$2; M=$3
 echo "### $T $P/$M start $(date '+%F %T')"
-echo "## 1 panel + 2 automatic defaults"
+# A "## <n> <name>" line starts a log section of build_evidence.py. run.sh shows each "## <n>" and "#> <n>" line as progress.
+# Case 2 has a "#>" line: its lines must stay in section 1.
+echo "## 1 panel"
 start $T-auto $P "$M" off
 open_model $T-auto $P "$M" && shot $T-auto panel && tmux capture-pane -p -t md-$T-auto | grep -E "family:|thinking:|Reasoning|Vision|Recommended"
 esc $T-auto 3
+echo "#> 2 automatic defaults"
 levels $T-auto auto; wire $T-auto
 echo "## 7 tool call"
 say $T-auto "Use the read tool on the file notes.txt in the current folder. Then reply with its first line exactly." 400; shot $T-auto tool
@@ -32,12 +36,18 @@ tmux capture-pane -p -t md-$T-fixcfg | grep -E "^╭" | tail -1
 esc $T-fixcfg 5; stop $T-fixcfg; cfg $P "$M" | jq -c "[.presets[]|{slug,exposeAsModel}]"
 [ "$(cfg $P "$M" | jq -r --arg s "$FIX" '.presets[]|select(.slug==$s)|.exposeAsModel')" = "true" ] || { echo "FIXED ALIAS NOT SET"; }
 start $T-fixed $P "$M@$FIX" off; echo "start level=$(level $T-fixed) footer=$(footer $T-fixed)"; levels $T-fixed fixed; wire $T-fixed; stop $T-fixed
-echo "## restore config snapshot"; restore_cfg
+echo "## restore config copy"; restore_cfg
 echo "## 6 image"
-img() { local t=$1; rm -f $S/work/word.ocr.json; mkdir -p $S/ev/$t/sessions; : > $S/ev/$t/wire.jsonl; tmux kill-session -t md-$t 2>/dev/null
-  tmux new-session -d -s md-$t -x 200 -y 46 "cd $S/work && PI_MODEL_DISCOVERY_NO_FAMILY_UPDATE=1 PI_MODEL_DISCOVERY_WIRE_LOG=$S/ev/$t/wire.jsonl $HOME/.local/bin/pi --session-dir $S/ev/$t/sessions --provider $P --model '$M' --thinking off $IMGFLAGS @word.png 'What word is written in this image? Reply with the word only.'"
-  sleep 5; $TMUXS/wait-for-idle.sh md-$t 4 400 1 >/dev/null; shot $t image; tmux capture-pane -p -t md-$t | grep -iE "zebra|image|vision" | tail -3; wire $t | jq -c '{imageCount,piModel}'; }
+img() { local t=$1
+  pi_session $t $P "$M" off "${IMGFLAGS:-} @word.png 'What word is written in this image? Reply with the word only.'"
+  sleep 5; wait_idle md-$t 4 400 1 >/dev/null; shot $t image; tmux capture-pane -p -t md-$t | grep -iE "zebra|image|vision" | tail -3; wire $t | jq -c '{imageCount,piModel}'; }
 img $T-img
+# One more run when the answer has no ZEBRA42. The first answer stays in ev-first-try/ for the page.
+if ! grep -q ZEBRA42 $S/ev/$T-img/image.txt; then
+  echo "image: the first answer has no ZEBRA42. The step runs one more time."
+  stop $T-img; sleep 1; rm -rf $S/ev-first-try/$T-img; mkdir -p $S/ev-first-try; mv $S/ev/$T-img $S/ev-first-try/$T-img
+  img $T-img
+fi
 cmd $T-img "/discover model $M vision off --source $P"; sleep 2; stop $T-img; cfg $P "$M" | jq -c .override
 img $T-imgoff; stop $T-imgoff
 start $T-imgback $P "$M" off; cmd $T-imgback "/discover model $M vision auto --source $P"; sleep 2; stop $T-imgback; cfg $P "$M" | jq -c .override

@@ -1,0 +1,17 @@
+{
+  "sources": {
+    "local-mac": {},
+    "mac-m3": { "oneModelAtATime": true },
+    "Desktop": { "listOnly": true }
+  },
+  "hiddenModel": { "source": "local-mac", "model": "Qwen3-ASR" },
+  "rows": [
+    { "tag": "gemma-local", "source": "local-mac", "model": "gemma-4-e4b" },
+    { "tag": "inkling-local", "source": "local-mac", "model": "Inkling-2-Mini" },
+    { "tag": "qwen38-local", "source": "local-mac", "model": "Qwen3.8-27B" },
+    { "tag": "qwen36-local", "source": "local-mac", "model": "Qwen3.6-35B-A3B-oQ4e-mtp" },
+    { "tag": "qwen35-local", "source": "local-mac", "model": "Qwen3.5-9B-MLX-4bit" },
+    { "tag": "flash-m3", "source": "mac-m3", "model": "qwen3.8-flash" },
+    { "tag": "gemma-m3", "source": "mac-m3", "model": "gemma-4-e4b", "imageFlags": "--no-tools" }
+  ]
+}
