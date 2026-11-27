@@ -1,12 +1,25 @@
-export const REASONING_EFFORTS = ["low", "medium", "xhigh"] as const;
-
-export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+/** All effort names that a chat template can accept, in order from the lowest to the highest. */
+export const KNOWN_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 export interface ChatTemplateKwargs {
 	enable_thinking?: boolean;
-	reasoning_effort?: ReasoningEffort;
+	reasoning_effort?: string;
 	preserve_thinking?: boolean;
 }
+
+/**
+ * The thinking controls that one model accepts. `ThinkingProfile` of
+ * `families.ts` has this shape. An empty `efforts` list means that the model
+ * does not read `reasoning_effort`.
+ */
+export interface ThinkingControls {
+	toggle: boolean;
+	efforts: readonly string[];
+	preserveThinking: boolean;
+}
+
+/** Where a server takes the thinking controls: in `chat_template_kwargs`, or as a top-level `reasoning_effort`. */
+export type ThinkingTransport = "chat-template" | "top-level";
 
 /** Backend-neutral sampling values stored in a named profile. */
 export interface ProfileSampling {
@@ -30,7 +43,7 @@ export interface ModelProfile {
 export type RepetitionPenaltyWireKey = "repetition_penalty" | "repeat_penalty";
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
-export type ThinkingLevelMap = Partial<Record<ThinkingLevel, ThinkingLevel | null>>;
+export type ThinkingLevelMap = Partial<Record<ThinkingLevel, string | null>>;
 export type ThinkingProfileRoutes = Record<ThinkingLevel, ModelProfile>;
 
 export interface ModelProfileRouting {
@@ -46,11 +59,10 @@ export interface ExplicitProfileRoutingAnalysis {
 }
 
 /**
- * Map Pi's seven native levels onto Qwen's three supported reasoning efforts.
- * Keeping every Pi level available makes Shift-Tab work naturally; adjacent
- * native levels intentionally share the closest Qwen effort.
+ * The level map of an adaptive alias when the model has no thinking plan.
+ * It is the Qwen 3.8 convention of 0.10.0: all seven pi levels are offered.
  */
-export const QWEN_NATIVE_THINKING_LEVEL_MAP: ThinkingLevelMap = {
+export const LEGACY_THINKING_LEVEL_MAP: ThinkingLevelMap = {
 	minimal: "low",
 	low: "low",
 	medium: "medium",
@@ -59,12 +71,25 @@ export const QWEN_NATIVE_THINKING_LEVEL_MAP: ThinkingLevelMap = {
 	max: "xhigh",
 };
 
-/** Dynamic chat-template values resolved by Pi for each request. */
-export const QWEN_NATIVE_CHAT_TEMPLATE_KWARGS = {
-	enable_thinking: { $var: "thinking.enabled" as const },
-	reasoning_effort: { $var: "thinking.effort" as const, omitWhenOff: true },
-	preserve_thinking: true,
+/** The preset kind of each pi level in the Qwen 3.8 convention of 0.10.0. */
+export const LEGACY_LEVEL_KINDS: Record<ThinkingLevel, string> = {
+	off: "off",
+	minimal: "low",
+	low: "low",
+	medium: "medium",
+	high: "xhigh",
+	xhigh: "xhigh",
+	max: "xhigh",
 };
+
+/** What the adapter knows about the thinking of one base model. */
+export interface ModelThinkingPlan {
+	controls: ThinkingControls;
+	/** Which pi levels the model offers, and the effort name of each. */
+	thinkingLevelMap: ThinkingLevelMap;
+	/** The thinking-only request fields of each pi level (no sampling values). */
+	levelParams: Record<ThinkingLevel, Record<string, unknown>>;
+}
 
 export interface ProfileCapableModel {
 	id: string;
@@ -73,10 +98,14 @@ export interface ProfileCapableModel {
 	thinkingLevelMap?: ThinkingLevelMap;
 	compat?: Record<string, unknown>;
 	samplingParams?: Record<string, unknown>;
+	samplingParamsByThinkingLevel?: Partial<Record<ThinkingLevel, Record<string, unknown>>>;
 }
 
 export interface ProfileExpansionOptions {
 	repetitionPenaltyKey?: RepetitionPenaltyWireKey;
+	thinkingTransport?: ThinkingTransport;
+	/** Thinking plan of each base model, keyed by the base model id. */
+	plans?: ReadonlyMap<string, ModelThinkingPlan>;
 }
 
 export interface ProfileExpansion<T extends ProfileCapableModel> {
@@ -117,21 +146,28 @@ export function validateProfileSlug(slug: string): string | null {
 	return null;
 }
 
-export function validateChatTemplateKwargs(value: unknown): string | null {
+/**
+ * Validate the thinking values of a preset. With `controls`, the values must
+ * be ones that the model accepts. With no `controls`, each known effort name
+ * is allowed.
+ */
+export function validateChatTemplateKwargs(value: unknown, controls?: ThinkingControls): string | null {
 	if (!isRecord(value)) return "chat_template_kwargs must be an object.";
 
 	for (const key of Object.keys(value)) {
 		if (!CHAT_TEMPLATE_KEYS.has(key)) return `Unsupported chat_template_kwargs key: ${key}`;
 	}
 
-	if (hasOwn(value, "enable_thinking") && typeof value.enable_thinking !== "boolean") {
-		return "enable_thinking must be true or false.";
+	if (hasOwn(value, "enable_thinking")) {
+		if (typeof value.enable_thinking !== "boolean") return "enable_thinking must be true or false.";
+		if (controls && !controls.toggle) return "This model has no enable_thinking switch.";
 	}
-	if (
-		hasOwn(value, "reasoning_effort") &&
-		!REASONING_EFFORTS.includes(value.reasoning_effort as ReasoningEffort)
-	) {
-		return 'reasoning_effort must be "low", "medium", or "xhigh".';
+	if (hasOwn(value, "reasoning_effort")) {
+		const allowed: readonly string[] = controls ? controls.efforts : KNOWN_REASONING_EFFORTS;
+		if (controls && allowed.length === 0) return "This model does not read reasoning_effort.";
+		if (typeof value.reasoning_effort !== "string" || !allowed.includes(value.reasoning_effort)) {
+			return `reasoning_effort must be one of: ${allowed.join(", ")}.`;
+		}
 	}
 	if (hasOwn(value, "preserve_thinking") && typeof value.preserve_thinking !== "boolean") {
 		return "preserve_thinking must be true or false.";
@@ -181,14 +217,14 @@ export function validateProfileSampling(value: unknown): string | null {
 	return null;
 }
 
-export function validateModelProfile(value: unknown): string | null {
+export function validateModelProfile(value: unknown, controls?: ThinkingControls): string | null {
 	if (!isRecord(value)) return "Profile must be an object.";
 	if (typeof value.slug !== "string") return "Profile name must be a string.";
 
 	const chatTemplateKwargs = value.chatTemplateKwargs ?? {};
 	const slugError = validateProfileSlug(value.slug);
 	if (slugError) return slugError;
-	const chatError = validateChatTemplateKwargs(chatTemplateKwargs);
+	const chatError = validateChatTemplateKwargs(chatTemplateKwargs, controls);
 	if (chatError) return chatError;
 	const samplingError = validateProfileSampling(value.sampling);
 	if (samplingError) return samplingError;
@@ -240,7 +276,8 @@ export function buildProfileSamplingParams(
 	return params;
 }
 
-export type ThinkingProfileKind = "off" | ReasoningEffort;
+/** The thinking role of a preset: "off", "on", or an effort name. */
+export type ThinkingProfileKind = string;
 
 export interface ThinkingProfileRouteAnalysis {
 	byKind: Record<ThinkingProfileKind, ModelProfile[]>;
@@ -252,54 +289,51 @@ export function thinkingProfileKind(profile: ModelProfile): ThinkingProfileKind 
 	const kwargs = profile.chatTemplateKwargs;
 	if (kwargs?.enable_thinking === false) return "off";
 	if (kwargs?.reasoning_effort !== undefined) return kwargs.reasoning_effort;
+	if (kwargs?.enable_thinking === true) return "on";
 	return undefined;
 }
 
-/** Explain missing/ambiguous preset roles as well as returning a complete route. */
+/**
+ * Explain missing/ambiguous preset roles as well as returning a complete route.
+ * `levelKinds` gives the preset kind that each pi level needs for this model.
+ */
 export function analyzeThinkingProfileRoutes(
 	profiles: readonly ModelProfile[] | undefined,
+	levelKinds: Record<ThinkingLevel, ThinkingProfileKind> = LEGACY_LEVEL_KINDS,
 ): ThinkingProfileRouteAnalysis {
-	const byKind: Record<ThinkingProfileKind, ModelProfile[]> = { off: [], low: [], medium: [], xhigh: [] };
+	const kinds = [...new Set(THINKING_LEVELS.map((level) => levelKinds[level]))];
+	const byKind: Record<ThinkingProfileKind, ModelProfile[]> = Object.fromEntries(kinds.map((kind) => [kind, []]));
 	for (const profile of profiles ?? []) {
 		if (validateModelProfile(profile) !== null) continue;
 		const kind = thinkingProfileKind(profile);
-		if (kind !== undefined) byKind[kind].push(profile);
+		if (kind !== undefined && byKind[kind]) byKind[kind].push(profile);
 	}
 	const issues: string[] = [];
-	for (const kind of ["off", "low", "medium", "xhigh"] as const) {
+	for (const kind of kinds) {
 		const matching = byKind[kind];
 		if (matching.length === 0) issues.push(`missing ${kind}`);
 		else if (matching.length > 1) issues.push(`ambiguous ${kind}: ${matching.map((profile) => profile.slug).join(", ")}`);
 	}
 	if (issues.length > 0) return { byKind, issues };
-	const off = byKind.off[0];
-	const low = byKind.low[0];
-	const medium = byKind.medium[0];
-	const xhigh = byKind.xhigh[0];
 	return {
 		byKind,
 		issues,
-		routes: {
-			off,
-			minimal: low,
-			low,
-			medium,
-			high: xhigh,
-			xhigh,
-			max: xhigh,
-		},
+		routes: Object.fromEntries(
+			THINKING_LEVELS.map((level) => [level, byKind[levelKinds[level]][0]]),
+		) as ThinkingProfileRoutes,
 	};
 }
 
 /**
  * Build a complete native-level router when there is exactly one fixed profile
- * for off, low, medium, and xhigh. Sampling-only profiles are deliberately
+ * for each kind that the model needs. Sampling-only profiles are deliberately
  * ignored so they can themselves act as adaptive router aliases.
  */
 export function resolveThinkingProfileRoutes(
 	profiles: readonly ModelProfile[] | undefined,
+	levelKinds: Record<ThinkingLevel, ThinkingProfileKind> = LEGACY_LEVEL_KINDS,
 ): ThinkingProfileRoutes | undefined {
-	return analyzeThinkingProfileRoutes(profiles).routes;
+	return analyzeThinkingProfileRoutes(profiles, levelKinds).routes;
 }
 
 export function routingLevelsFromProfiles(routes: ThinkingProfileRoutes): Record<ThinkingLevel, string> {
@@ -390,33 +424,53 @@ export function migrateLegacyProfileRouting(
 	};
 }
 
-const PROFILE_CONTROLLED_WIRE_KEYS = [
-	"enable_thinking",
-	"reasoning_effort",
-	"temperature",
-	"top_p",
-	"top_k",
-	"min_p",
-	"repetition_penalty",
-	"repeat_penalty",
-	"presence_penalty",
-	"frequency_penalty",
-] as const;
-
-/** Replace every profile-controlled wire field with one routed profile. */
-export function applyThinkingProfileRoute(
-	payload: unknown,
-	profile: ModelProfile,
-	repetitionPenaltyKey: RepetitionPenaltyWireKey = "repetition_penalty",
-): unknown {
-	if (!isRecord(payload)) return payload;
-	const next = { ...payload };
-	for (const key of PROFILE_CONTROLLED_WIRE_KEYS) delete next[key];
-	Object.assign(next, buildProfileSamplingParams(profile.sampling, repetitionPenaltyKey));
-	const kwargs = profile.chatTemplateKwargs;
-	if (kwargs && Object.keys(kwargs).length > 0) next.chat_template_kwargs = { ...kwargs };
-	else delete next.chat_template_kwargs;
+/**
+ * Keep only the thinking values that the model accepts. A template gives an
+ * error for an effort name that it does not know, so that value is not sent.
+ * With no `controls`, the values go out as they are.
+ */
+export function filterChatTemplateKwargs(
+	kwargs: ChatTemplateKwargs | undefined,
+	controls: ThinkingControls | undefined,
+): ChatTemplateKwargs {
+	const next: ChatTemplateKwargs = { ...kwargs };
+	if (!controls) return next;
+	if (!controls.toggle) delete next.enable_thinking;
+	if (next.reasoning_effort !== undefined && !controls.efforts.includes(next.reasoning_effort)) {
+		delete next.reasoning_effort;
+	}
 	return next;
+}
+
+export interface LevelParamOptions {
+	repetitionPenaltyKey?: RepetitionPenaltyWireKey;
+	thinkingTransport?: ThinkingTransport;
+}
+
+/**
+ * The request fields of one preset: the sampling values and the thinking
+ * values. The base model, a fixed alias and the adaptive alias all use this
+ * one function, so the three send the same fields for the same preset.
+ */
+export function buildLevelParams(
+	profile: Pick<ModelProfile, "chatTemplateKwargs" | "sampling">,
+	controls: ThinkingControls | undefined,
+	options: LevelParamOptions = {},
+): Record<string, unknown> {
+	const params = buildProfileSamplingParams(profile.sampling, options.repetitionPenaltyKey ?? "repetition_penalty");
+	const kwargs = filterChatTemplateKwargs(profile.chatTemplateKwargs, controls);
+	if (options.thinkingTransport === "top-level") {
+		const effort = kwargs.reasoning_effort ?? (kwargs.enable_thinking === false ? "none" : undefined);
+		if (effort !== undefined) params.reasoning_effort = effort;
+	} else if (Object.keys(kwargs).length > 0) {
+		params.chat_template_kwargs = kwargs;
+	}
+	return params;
+}
+
+/** The `compat` of a model whose thinking values come only from this extension. */
+export function extensionThinkingCompat(compat: Record<string, unknown> | undefined): Record<string, unknown> {
+	return { ...compat, thinkingFormat: "chat-template", chatTemplateKwargs: {}, supportsReasoningEffort: false };
 }
 
 export function describeChatTemplateKwargs(kwargs: ChatTemplateKwargs | undefined): string {
@@ -436,40 +490,24 @@ export function describeProfileSampling(
 		.join(" · ");
 }
 
-function fixedThinkingLevelMap(
-	kwargs: ChatTemplateKwargs,
-	base: ProfileCapableModel,
-): ThinkingLevelMap | undefined {
+/** A preset with a fixed thinking state offers one pi level only. */
+function fixedThinkingLevelMap(kwargs: ChatTemplateKwargs, base: ProfileCapableModel): ThinkingLevelMap | undefined {
 	const { enable_thinking, reasoning_effort } = kwargs;
 	if (enable_thinking === false) return undefined;
-
-	if (reasoning_effort !== undefined) {
-		return {
-			off: null,
-			minimal: null,
-			low: reasoning_effort === "low" ? "low" : null,
-			medium: reasoning_effort === "medium" ? "medium" : null,
-			high: null,
-			xhigh: reasoning_effort === "xhigh" ? "xhigh" : null,
-			max: null,
-		};
-	}
-
-	// Pi has no generic on/off reasoning level. Lock an explicitly enabled profile
-	// to one visible level so the UI cannot imply that a different effort is sent.
-	if (enable_thinking === true) {
-		return {
-			off: null,
-			minimal: null,
-			low: null,
-			medium: null,
-			high: "high",
-			xhigh: null,
-			max: null,
-		};
-	}
-
-	return base.thinkingLevelMap;
+	const locked: ThinkingLevel | undefined =
+		reasoning_effort !== undefined
+			? (THINKING_LEVELS as readonly string[]).includes(reasoning_effort)
+				? (reasoning_effort as ThinkingLevel)
+				: "high"
+			: enable_thinking === true
+				? "high"
+				: undefined;
+	if (locked === undefined) return base.thinkingLevelMap;
+	// pi has no generic on/off reasoning level. One visible level makes sure that
+	// the UI does not show an effort that the preset does not send.
+	return Object.fromEntries(
+		THINKING_LEVELS.map((level) => [level, level === locked ? level : null]),
+	) as ThinkingLevelMap;
 }
 
 /**
@@ -486,10 +524,14 @@ export function expandModelProfiles<T extends ProfileCapableModel>(
 	const warnings: string[] = [];
 	const usedModelIds = new Set(baseModels.map((model) => model.id));
 	const baseModelIds = new Set(usedModelIds);
-	const repetitionPenaltyKey = options.repetitionPenaltyKey ?? "repetition_penalty";
+	const levelOptions: LevelParamOptions = {
+		repetitionPenaltyKey: options.repetitionPenaltyKey ?? "repetition_penalty",
+		thinkingTransport: options.thinkingTransport,
+	};
 	let profileCount = 0;
 
 	for (const base of baseModels) {
+		const plan = options.plans?.get(base.id);
 		const rawProfiles: unknown = profilesByModel?.[base.id];
 		if (rawProfiles === undefined) continue;
 		if (!Array.isArray(rawProfiles)) {
@@ -511,12 +553,13 @@ export function expandModelProfiles<T extends ProfileCapableModel>(
 				continue;
 			}
 
-			const kwargs = profile.chatTemplateKwargs ?? {};
-			const hasThinkingValues = Object.keys(kwargs).length > 0;
+			// The alias shows what it sends. A value that the model does not accept is not sent.
+			const kwargs = filterChatTemplateKwargs(profile.chatTemplateKwargs, plan?.controls);
+			const hasThinkingValues = Object.keys(profile.chatTemplateKwargs ?? {}).length > 0;
 			const enabled = kwargs.enable_thinking;
 			const effort = kwargs.reasoning_effort;
 			const reasoning = hasThinkingValues
-				? enabled === false
+				? enabled === false || effort === "none"
 					? false
 					: enabled === true || effort !== undefined
 						? true
@@ -532,20 +575,15 @@ export function expandModelProfiles<T extends ProfileCapableModel>(
 						? fixedThinkingLevelMap(kwargs, base)
 						: undefined
 					: base.thinkingLevelMap,
-				compat: hasThinkingValues
-					? {
-							...base.compat,
-							thinkingFormat: "chat-template",
-							chatTemplateKwargs: {},
-							supportsReasoningEffort: false,
-						}
-					: base.compat,
+				compat: hasThinkingValues || plan ? extensionThinkingCompat(base.compat) : base.compat,
 				samplingParams: {
 					...base.samplingParams,
 					model: base.id,
-					...buildProfileSamplingParams(profile.sampling, repetitionPenaltyKey),
-					...(hasThinkingValues ? { chat_template_kwargs: { ...kwargs } } : {}),
+					...buildLevelParams(profile, plan?.controls, levelOptions),
 				},
+				// A preset with thinking values is fixed at each level. A sampling-only
+				// preset keeps the thinking of the base model at each level.
+				samplingParamsByThinkingLevel: hasThinkingValues ? undefined : plan?.levelParams,
 			} as T & ProfileCapableModel;
 
 			models.push(profileModel);
@@ -567,6 +605,7 @@ export interface AdaptiveRouterExpansion<T extends ProfileCapableModel> {
 	models: Array<T & ProfileCapableModel>;
 	routerCount: number;
 	warnings: string[];
+	/** The preset of each pi level, for the footer label. The request fields are on the model. */
 	runtimeRoutes: Map<string, ThinkingProfileRoutes>;
 }
 
@@ -575,11 +614,16 @@ export function expandAdaptiveProfileRouters<T extends ProfileCapableModel>(
 	baseModels: readonly T[],
 	profilesByModel: Record<string, ModelProfile[]> | undefined,
 	routingByModel: Record<string, ModelProfileRouting> | undefined,
+	options: ProfileExpansionOptions = {},
 ): AdaptiveRouterExpansion<T> {
 	const models = baseModels.map((model) => ({ ...model })) as Array<T & ProfileCapableModel>;
 	const warnings: string[] = [];
 	const runtimeRoutes = new Map<string, ThinkingProfileRoutes>();
 	const usedModelIds = new Set(baseModels.map((model) => model.id));
+	const levelOptions: LevelParamOptions = {
+		repetitionPenaltyKey: options.repetitionPenaltyKey ?? "repetition_penalty",
+		thinkingTransport: options.thinkingTransport,
+	};
 	let routerCount = 0;
 
 	for (const base of baseModels) {
@@ -597,16 +641,22 @@ export function expandAdaptiveProfileRouters<T extends ProfileCapableModel>(
 			warnings.push(`Adaptive alias "${aliasId}" collides with another model and was skipped.`);
 			continue;
 		}
+		const plan = options.plans?.get(base.id);
+		const routes = analysis.routes;
 		models.push({
 			...base,
 			id: aliasId,
 			name: `${base.name} (${analysis.routing.aliasSlug}; adaptive)`,
 			reasoning: true,
-			thinkingLevelMap: { ...QWEN_NATIVE_THINKING_LEVEL_MAP },
+			thinkingLevelMap: { ...(plan?.thinkingLevelMap ?? LEGACY_THINKING_LEVEL_MAP) },
+			compat: extensionThinkingCompat(base.compat),
 			samplingParams: { ...base.samplingParams, model: base.id },
+			samplingParamsByThinkingLevel: Object.fromEntries(
+				THINKING_LEVELS.map((level) => [level, buildLevelParams(routes[level], plan?.controls, levelOptions)]),
+			),
 		} as T & ProfileCapableModel);
 		usedModelIds.add(aliasId);
-		runtimeRoutes.set(aliasId, analysis.routes);
+		runtimeRoutes.set(aliasId, routes);
 		routerCount++;
 	}
 

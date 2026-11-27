@@ -9,6 +9,8 @@
  * The per-server API research this encodes lives in docs/providers/.
  */
 
+import type { ServerThinkingReport } from "./families.ts";
+
 export interface ModelConfig {
 	id: string;
 	name: string;
@@ -18,6 +20,12 @@ export interface ModelConfig {
 	input: string[] | null;
 	source: string;
 	loaded?: boolean;
+	/** Image input, as a server fact. `null` = the server says nothing. */
+	vision: boolean | null;
+	/** The server model type (oMLX `model_type`, for example `vlm` or `audio_stt`). */
+	modelType: string | null;
+	/** The thinking controls that the server reports. `null` = the server says nothing. */
+	thinking: ServerThinkingReport | null;
 }
 
 /**
@@ -32,10 +40,29 @@ export interface ModelEnrichment {
 	maxTokens?: number;
 	/** Model is currently loaded in memory (oMLX status `loaded`, Ollama /api/ps). */
 	loaded?: boolean;
-	/** Authoritative VLM flag (llama.cpp /props `modalities.vision`). */
+	/**
+	 * Image input (llama.cpp /props `modalities.vision`, oMLX `model_type`).
+	 * true = the server says yes. false = the server says no.
+	 */
 	vision?: boolean;
-	/** Server-reported thinking-capable default (oMLX status `thinking_default`). */
-	thinkingDefault?: boolean;
+	/** The server model type (oMLX status `model_type`, else `engine_type`). */
+	modelType?: string;
+	/**
+	 * oMLX status `thinking_default`. A boolean = the template has the
+	 * `enable_thinking` toggle and this is its default. `null` = no toggle.
+	 */
+	thinkingDefault?: boolean | null;
+	/** oMLX status `preserve_thinking_default`. A boolean = the template reads `preserve_thinking`. */
+	preserveThinkingDefault?: boolean | null;
+	/**
+	 * oMLX status `reasoning_efforts`. `null` = the template does not read
+	 * `reasoning_effort`. `[]` = the template reads it but names no standard level.
+	 */
+	reasoningEfforts?: string[] | null;
+	/** The chat template text (llama.cpp /props `chat_template`). */
+	chatTemplate?: string;
+	/** The server status has thinking fields for this model. */
+	hasThinkingReport?: boolean;
 }
 
 /** Key under which enrichModels() stashes a ModelEnrichment on a raw model object. */
@@ -215,7 +242,30 @@ export function extractModelConfig(raw: Record<string, unknown>): ModelConfig {
 	// 5. Enrichment: native endpoint reports an authoritative VLM flag (llama.cpp /props)
 	if (!hasVision && enriched.vision === true) hasVision = true;
 
-	// 6. Build final input array — always include "text", add "image" if vision detected
+	// 6. oMLX: `model_type` on the /v1/models entry (`vlm` = image input, `llm` = text only)
+	const rawModelType = typeof raw.model_type === "string" && raw.model_type ? raw.model_type : null;
+	const modelType = enriched.modelType ?? rawModelType;
+	if (!hasVision && rawModelType?.toLowerCase() === "vlm") hasVision = true;
+
+	// The server fact. A positive sign wins. Without one, a "no" from the server
+	// (a native flag, `model_type: llm`, or a modality list with no image) gives false.
+	let vision: boolean | null = null;
+	if (hasVision) vision = true;
+	else if (enriched.vision === false || rawModelType?.toLowerCase() === "llm" || input !== null) vision = false;
+
+	// Thinking controls that the server reports (oMLX status, llama.cpp chat template)
+	let thinking: ServerThinkingReport | null = null;
+	if (enriched.hasThinkingReport || enriched.chatTemplate) {
+		thinking = {};
+		if (enriched.hasThinkingReport) {
+			thinking.thinkingDefault = enriched.thinkingDefault;
+			thinking.preserveThinkingDefault = enriched.preserveThinkingDefault;
+			thinking.reasoningEfforts = enriched.reasoningEfforts;
+		}
+		if (enriched.chatTemplate) thinking.chatTemplate = enriched.chatTemplate;
+	}
+
+	// 7. Build final input array — always include "text", add "image" if vision detected
 	if (hasVision) {
 		input = input && input.includes("image") ? input : ["text", "image"];
 	} else if (!input) {
@@ -228,7 +278,7 @@ export function extractModelConfig(raw: Record<string, unknown>): ModelConfig {
 	if (loaded === undefined && enriched.loaded === true) loaded = true;
 	const source = String(raw.source ?? (status ? "server args" : "api"));
 
-	return { id, name, contextWindow, maxTokens, reasoning, input, source, loaded };
+	return { id, name, contextWindow, maxTokens, reasoning, input, source, loaded, vision, modelType, thinking };
 }
 
 // ---------------------------------------------------------------------------
@@ -298,15 +348,31 @@ export async function enrichModels(
 	};
 	try {
 		if (serverType === "llama.cpp") {
-			// Native /props: the real runtime context + the authoritative VLM flag
+			// Native /props: the real runtime context, the VLM flag and the chat template.
+			// The answer is for one model only. A router answer is for no model.
 			const props = await getJson("/props");
-			if (!props) return;
+			if (!props || props.role === "router") return;
+			let target: Record<string, unknown> | undefined;
+			if (models.length === 1) {
+				target = models[0];
+			} else {
+				const names = new Set<string>();
+				if (typeof props.model_alias === "string" && props.model_alias) names.add(props.model_alias);
+				if (typeof props.model_path === "string" && props.model_path) {
+					const file = props.model_path.split(/[\\/]/).pop() ?? "";
+					if (file) names.add(file).add(file.replace(/\.gguf$/i, ""));
+				}
+				target = models.find((m) => names.has(String(m.id ?? "")));
+			}
+			if (!target) return;
 			const gen = props.default_generation_settings as Record<string, unknown> | undefined;
 			const nCtx = gen ? tryNum(gen.n_ctx) : null;
-			const vision = Boolean((props.modalities as Record<string, unknown> | undefined)?.vision);
-			if ((nCtx !== null && nCtx > 0) || vision) {
-				for (const m of models) merge(m, { contextWindow: nCtx ?? undefined, vision });
-			}
+			const visionFlag = (props.modalities as Record<string, unknown> | undefined)?.vision;
+			const e: ModelEnrichment = {};
+			if (nCtx !== null && nCtx > 0) e.contextWindow = nCtx;
+			if (typeof visionFlag === "boolean") e.vision = visionFlag;
+			if (typeof props.chat_template === "string" && props.chat_template) e.chatTemplate = props.chat_template;
+			if (Object.keys(e).length > 0) merge(target, e);
 			return;
 		}
 		if (serverType === "oMLX") {
@@ -323,8 +389,23 @@ export async function enrichModels(
 						tryNum(entry.max_context_window) ?? tryNum(entry.model_context_length) ?? undefined,
 					maxTokens: tryNum(entry.max_tokens) ?? undefined,
 					loaded: entry.loaded === true ? true : undefined,
-					thinkingDefault: entry.thinking_default === true ? true : undefined,
 				};
+				const modelType = [entry.model_type, entry.engine_type].find(
+					(v): v is string => typeof v === "string" && v !== "",
+				);
+				if (modelType) e.modelType = modelType;
+				if (entry.model_type === "vlm") e.vision = true;
+				else if (entry.model_type === "llm") e.vision = false;
+				// An older server has none of the thinking fields. Then there is no report.
+				if ("thinking_default" in entry || "preserve_thinking_default" in entry || "reasoning_efforts" in entry) {
+					const flag = (v: unknown): boolean | null => (typeof v === "boolean" ? v : null);
+					e.hasThinkingReport = true;
+					e.thinkingDefault = flag(entry.thinking_default);
+					e.preserveThinkingDefault = flag(entry.preserve_thinking_default);
+					e.reasoningEfforts = Array.isArray(entry.reasoning_efforts)
+						? entry.reasoning_efforts.filter((v): v is string => typeof v === "string")
+						: null;
+				}
 				byId.set(id, e);
 				// /v1/models may surface the user alias as the id — match both
 				const alias = String(entry.model_alias ?? "");

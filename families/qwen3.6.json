@@ -1,0 +1,52 @@
+{
+  "id": "qwen3.6",
+  "label": "Qwen 3.6",
+  "sources": [
+    "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/raw/main/chat_template.jinja"
+  ],
+  "match": [
+    "qwen[-_ ]?3[._]6(?!\\d)"
+  ],
+  "capabilities": {
+    "image": true,
+    "audio": false,
+    "tools": true,
+    "contextWindow": 262144
+  },
+  "thinking": {
+    "toggle": true,
+    "efforts": [],
+    "readsPreserve": true,
+    "sendPreserve": true,
+    "defaultOn": true
+  },
+  "sampling": {
+    "off": {
+      "temperature": 0.7,
+      "topP": 0.8,
+      "topK": 20,
+      "presencePenalty": 1.5
+    },
+    "on": {
+      "temperature": 0.6,
+      "topP": 0.95,
+      "topK": 20,
+      "presencePenalty": 0
+    }
+  },
+  "extraPresets": [
+    {
+      "slug": "thinking-general",
+      "thinking": "on",
+      "sampling": {
+        "temperature": 1,
+        "topP": 0.95,
+        "topK": 20,
+        "presencePenalty": 0
+      }
+    }
+  ],
+  "notes": {
+    "extraPresets.thinking-general.presencePenalty": "Unsloth value: 0.0. cardValue: 1.5. The Unsloth value is used."
+  }
+}

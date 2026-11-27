@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "revision": 1,
+  "updated": "2026-11-27",
+  "files": [
+    "qwen3.8.json",
+    "qwen3.6.json",
+    "qwen3.5-small.json",
+    "qwen3.5.json",
+    "qwen3.json",
+    "gemma4.json",
+    "inkling2-small.json",
+    "inkling2-mini.json",
+    "inkling.json"
+  ],
+  "servers": {
+    "Ollama": {
+      "thinking": "top-level"
+    },
+    "LM Studio": {
+      "thinking": "top-level"
+    }
+  }
+}

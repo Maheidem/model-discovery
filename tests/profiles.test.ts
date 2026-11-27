@@ -2,14 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
 	analyzeExplicitProfileRouting,
-	applyThinkingProfileRoute,
+	analyzeThinkingProfileRoutes,
+	buildLevelParams,
 	buildProfileSamplingParams,
 	expandAdaptiveProfileRouters,
 	expandModelProfiles,
 	migrateLegacyProfileRouting,
 	profileModelId,
-	QWEN_NATIVE_CHAT_TEMPLATE_KWARGS,
-	QWEN_NATIVE_THINKING_LEVEL_MAP,
+	filterChatTemplateKwargs,
+	LEGACY_THINKING_LEVEL_MAP,
 	repetitionPenaltyKeyForServer,
 	validateChatTemplateKwargs,
 	validateModelProfile,
@@ -17,6 +18,8 @@ import {
 	validateProfileSlug,
 	type ModelProfile,
 	type ModelProfileRouting,
+	type ModelThinkingPlan,
+	type ThinkingControls,
 } from "../extensions/profiles.ts";
 
 const baseModel = {
@@ -28,6 +31,14 @@ const baseModel = {
 	maxTokens: 32_768,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	compat: { thinkingFormat: "qwen-chat-template" },
+};
+
+const qwen38Controls: ThinkingControls = { toggle: true, efforts: ["low", "medium", "xhigh"], preserveThinking: true };
+const toggleOnlyControls: ThinkingControls = { toggle: true, efforts: [], preserveThinking: false };
+const effortOnlyControls: ThinkingControls = {
+	toggle: false,
+	efforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+	preserveThinking: false,
 };
 
 test("validates profile names and the supported kwargs", () => {
@@ -43,7 +54,15 @@ test("validates profile names and the supported kwargs", () => {
 		}),
 		null,
 	);
-	assert.match(validateChatTemplateKwargs({ reasoning_effort: "high" }) ?? "", /low.*medium.*xhigh/);
+	// With no model profile, each known effort name is allowed.
+	assert.equal(validateChatTemplateKwargs({ reasoning_effort: "high" }), null);
+	assert.match(validateChatTemplateKwargs({ reasoning_effort: "ultra" }) ?? "", /none, minimal, low, medium, high, xhigh, max/);
+	// With a model profile, only the values that the model accepts are allowed.
+	assert.match(validateChatTemplateKwargs({ reasoning_effort: "high" }, qwen38Controls) ?? "", /low, medium, xhigh/);
+	assert.equal(validateChatTemplateKwargs({ reasoning_effort: "xhigh" }, qwen38Controls), null);
+	assert.match(validateChatTemplateKwargs({ reasoning_effort: "low" }, toggleOnlyControls) ?? "", /does not read reasoning_effort/);
+	assert.match(validateChatTemplateKwargs({ enable_thinking: true }, effortOnlyControls) ?? "", /no enable_thinking switch/);
+	assert.equal(validateChatTemplateKwargs({ reasoning_effort: "none" }, effortOnlyControls), null);
 	assert.equal(validateChatTemplateKwargs({ enable_thinking: false, reasoning_effort: "low" }), null);
 	assert.equal(validateChatTemplateKwargs({}), null);
 	assert.match(validateChatTemplateKwargs({ temperature: 0.2 }) ?? "", /Unsupported/);
@@ -54,8 +73,8 @@ test("validates profile names and the supported kwargs", () => {
 	);
 });
 
-test("maps every Pi native thinking level to Qwen chat-template controls", () => {
-	assert.deepEqual(QWEN_NATIVE_THINKING_LEVEL_MAP, {
+test("the legacy level map offers all seven pi levels with the Qwen 3.8 efforts", () => {
+	assert.deepEqual(LEGACY_THINKING_LEVEL_MAP, {
 		minimal: "low",
 		low: "low",
 		medium: "medium",
@@ -63,11 +82,67 @@ test("maps every Pi native thinking level to Qwen chat-template controls", () =>
 		xhigh: "xhigh",
 		max: "xhigh",
 	});
-	assert.deepEqual(QWEN_NATIVE_CHAT_TEMPLATE_KWARGS, {
-		enable_thinking: { $var: "thinking.enabled" },
-		reasoning_effort: { $var: "thinking.effort", omitWhenOff: true },
-		preserve_thinking: true,
+});
+
+test("a value that the model does not accept is not sent", () => {
+	assert.deepEqual(
+		filterChatTemplateKwargs({ enable_thinking: true, reasoning_effort: "high", preserve_thinking: false }, qwen38Controls),
+		{ enable_thinking: true, preserve_thinking: false },
+	);
+	assert.deepEqual(filterChatTemplateKwargs({ enable_thinking: true, reasoning_effort: "low" }, toggleOnlyControls), {
+		enable_thinking: true,
 	});
+	assert.deepEqual(filterChatTemplateKwargs({ enable_thinking: true, reasoning_effort: "max" }, effortOnlyControls), {
+		reasoning_effort: "max",
+	});
+	// With no model profile, the values go out as they are.
+	assert.deepEqual(filterChatTemplateKwargs({ enable_thinking: true, reasoning_effort: "high" }, undefined), {
+		enable_thinking: true,
+		reasoning_effort: "high",
+	});
+});
+
+test("one function builds the request fields of a preset for each server type", () => {
+	const preset: ModelProfile = {
+		slug: "thinking-low",
+		chatTemplateKwargs: { enable_thinking: true, reasoning_effort: "low" },
+		sampling: { temperature: 1, repetitionPenalty: 1.1 },
+	};
+	assert.deepEqual(buildLevelParams(preset, qwen38Controls), {
+		temperature: 1,
+		repetition_penalty: 1.1,
+		chat_template_kwargs: { enable_thinking: true, reasoning_effort: "low" },
+	});
+	assert.deepEqual(buildLevelParams(preset, toggleOnlyControls, { repetitionPenaltyKey: "repeat_penalty" }), {
+		temperature: 1,
+		repeat_penalty: 1.1,
+		chat_template_kwargs: { enable_thinking: true },
+	});
+	// Ollama and LM Studio take no chat_template_kwargs on /v1.
+	assert.deepEqual(buildLevelParams(preset, undefined, { thinkingTransport: "top-level" }), {
+		temperature: 1,
+		repetition_penalty: 1.1,
+		reasoning_effort: "low",
+	});
+	assert.deepEqual(
+		buildLevelParams({ chatTemplateKwargs: { enable_thinking: false } }, undefined, { thinkingTransport: "top-level" }),
+		{ reasoning_effort: "none" },
+	);
+	assert.deepEqual(buildLevelParams({ sampling: { topK: 20 } }, qwen38Controls), { top_k: 20 });
+});
+
+test("the preset roles follow the level kinds of the model", () => {
+	const gemma: ModelProfile[] = [
+		{ slug: "instruct", chatTemplateKwargs: { enable_thinking: false } },
+		{ slug: "thinking", chatTemplateKwargs: { enable_thinking: true } },
+	];
+	const kinds = { off: "off", minimal: "on", low: "on", medium: "on", high: "on", xhigh: "on", max: "on" };
+	const analysis = analyzeThinkingProfileRoutes(gemma, kinds);
+	assert.deepEqual(analysis.issues, []);
+	assert.equal(analysis.routes?.off.slug, "instruct");
+	assert.equal(analysis.routes?.max.slug, "thinking");
+	// The legacy kinds need off, low, medium and xhigh.
+	assert.deepEqual(analyzeThinkingProfileRoutes(gemma).issues, ["missing low", "missing medium", "missing xhigh"]);
 });
 
 const routedProfiles: ModelProfile[] = [
@@ -100,30 +175,6 @@ test("explicit routing permits duplicate-effort presets and resolves all seven l
 	assert.equal(analysis.routes.low.slug, "thinking-low-creative");
 	assert.equal(analysis.routes.medium.slug, "thinking-medium");
 
-	assert.deepEqual(
-		applyThinkingProfileRoute(
-			{
-				model: "Qwen3.8-27B",
-				enable_thinking: false,
-				reasoning_effort: "low",
-				temperature: 0,
-				top_k: 99,
-				repeat_penalty: 1.2,
-				frequency_penalty: 1,
-				chat_template_kwargs: { enable_thinking: false },
-				messages: [],
-			},
-			analysis.routes.medium,
-			"repetition_penalty",
-		),
-		{
-			model: "Qwen3.8-27B",
-			top_p: 0.95,
-			presence_penalty: 0,
-			chat_template_kwargs: { enable_thinking: true, reasoning_effort: "medium" },
-			messages: [],
-		},
-	);
 });
 
 test("explicit routing reports missing references and alias collisions", () => {
@@ -252,6 +303,68 @@ test("registers only an explicit adaptive alias and leaves base/fixed aliases un
 	assert.equal(router.name, "Qwen3.8-27B (adaptive; adaptive)");
 	assert.deepEqual(router.samplingParams, { model: baseModel.id });
 	assert.deepEqual(adaptive.runtimeRoutes.get(`${baseModel.id}@adaptive`)?.low, profiles[2]);
+	// The request fields of each level are on the model. pi merges them last into the request.
+	assert.deepEqual(router.compat, { thinkingFormat: "chat-template", chatTemplateKwargs: {}, supportsReasoningEffort: false });
+	assert.deepEqual(router.thinkingLevelMap, LEGACY_THINKING_LEVEL_MAP);
+	assert.deepEqual(router.samplingParamsByThinkingLevel?.off, {
+		temperature: 0.7,
+		chat_template_kwargs: { enable_thinking: false },
+	});
+	assert.deepEqual(router.samplingParamsByThinkingLevel?.low, {
+		temperature: 1.2,
+		chat_template_kwargs: { enable_thinking: true, reasoning_effort: "low" },
+	});
+	assert.deepEqual(router.samplingParamsByThinkingLevel?.max, {
+		top_p: 0.95,
+		chat_template_kwargs: { enable_thinking: true, reasoning_effort: "xhigh" },
+	});
+});
+
+test("aliases follow the thinking plan of the model", () => {
+	const plan: ModelThinkingPlan = {
+		controls: toggleOnlyControls,
+		thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", xhigh: null, max: null },
+		levelParams: {
+			off: { chat_template_kwargs: { enable_thinking: false } },
+			minimal: { chat_template_kwargs: { enable_thinking: true } },
+			low: { chat_template_kwargs: { enable_thinking: true } },
+			medium: { chat_template_kwargs: { enable_thinking: true } },
+			high: { chat_template_kwargs: { enable_thinking: true } },
+			xhigh: { chat_template_kwargs: { enable_thinking: true } },
+			max: { chat_template_kwargs: { enable_thinking: true } },
+		},
+	};
+	const base = { ...baseModel, id: "gemma-4-e4b", name: "gemma-4-e4b", thinkingLevelMap: plan.thinkingLevelMap, samplingParamsByThinkingLevel: plan.levelParams };
+	const profiles: ModelProfile[] = [
+		{ slug: "instruct", chatTemplateKwargs: { enable_thinking: false }, sampling: { topK: 64 } },
+		// The model does not read reasoning_effort, so the effort is not sent.
+		{ slug: "thinking", chatTemplateKwargs: { enable_thinking: true, reasoning_effort: "low" }, sampling: { topK: 64 } },
+		{ slug: "creative", sampling: { temperature: 1.3 } },
+	];
+	const options = { plans: new Map([[base.id, plan]]) };
+	const fixed = expandModelProfiles([base], { [base.id]: profiles }, options);
+	const thinking = fixed.models.find((model) => model.id === "gemma-4-e4b@thinking");
+	assert.deepEqual(thinking?.samplingParams, { model: base.id, top_k: 64, chat_template_kwargs: { enable_thinking: true } });
+	assert.equal(thinking?.samplingParamsByThinkingLevel, undefined);
+	assert.equal(thinking?.thinkingLevelMap?.high, "high");
+	assert.equal(thinking?.thinkingLevelMap?.low, null);
+	// A sampling-only preset keeps the thinking of the base model at each level.
+	const creative = fixed.models.find((model) => model.id === "gemma-4-e4b@creative");
+	assert.deepEqual(creative?.samplingParams, { model: base.id, temperature: 1.3 });
+	assert.deepEqual(creative?.samplingParamsByThinkingLevel, plan.levelParams);
+	assert.deepEqual(creative?.thinkingLevelMap, plan.thinkingLevelMap);
+
+	const routing: ModelProfileRouting = {
+		enabled: true,
+		aliasSlug: "adaptive",
+		levels: { off: "instruct", minimal: "thinking", low: "thinking", medium: "thinking", high: "thinking", xhigh: "thinking", max: "thinking" },
+	};
+	const adaptive = expandAdaptiveProfileRouters(fixed.models, { [base.id]: profiles }, { [base.id]: routing }, options);
+	const router = adaptive.models.find((model) => model.id === "gemma-4-e4b@adaptive");
+	// Shift-Tab offers only the real levels of the model: off and on.
+	assert.deepEqual(router?.thinkingLevelMap, plan.thinkingLevelMap);
+	assert.deepEqual(router?.samplingParamsByThinkingLevel?.high, { top_k: 64, chat_template_kwargs: { enable_thinking: true } });
+	assert.deepEqual(router?.samplingParamsByThinkingLevel?.off, { top_k: 64, chat_template_kwargs: { enable_thinking: false } });
 });
 
 test("maps repetition penalty by backend", () => {

@@ -29,6 +29,7 @@
   },
   "files": [
     "extensions/",
+    "families/",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"

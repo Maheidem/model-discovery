@@ -1,0 +1,41 @@
+{
+  "id": "qwen3",
+  "label": "Qwen 3",
+  "sources": [
+    "https://huggingface.co/Qwen/Qwen3-8B/raw/main/tokenizer_config.json",
+    "https://unsloth.ai/docs/models/qwen3.md"
+  ],
+  "match": [
+    "qwen[-_ ]?3(?![._]?\\d)(?!.*(asr|tts|rerank|embed|aligner|coder))"
+  ],
+  "capabilities": {
+    "image": false,
+    "audio": false,
+    "tools": true,
+    "contextWindow": 32768
+  },
+  "thinking": {
+    "toggle": true,
+    "efforts": [],
+    "readsPreserve": false,
+    "sendPreserve": false,
+    "defaultOn": true
+  },
+  "sampling": {
+    "off": {
+      "temperature": 0.7,
+      "topP": 0.8,
+      "topK": 20,
+      "minP": 0
+    },
+    "on": {
+      "temperature": 0.6,
+      "topP": 0.95,
+      "topK": 20,
+      "minP": 0
+    }
+  },
+  "notes": {
+    "match": "The pattern needs qwen3 with no generation digit after it. It does not match speech, embedding, reranker or Coder models."
+  }
+}

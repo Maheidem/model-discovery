@@ -1,0 +1,39 @@
+{
+  "id": "inkling2-mini",
+  "label": "Inkling 2 Mini",
+  "sources": [
+    "https://huggingface.co/thinkingmachines/Inkling-2-Mini/raw/main/chat_template.jinja",
+    "https://unsloth.ai/docs/models/inkling-2"
+  ],
+  "match": [
+    "inkling[-_ ]?2[-_ ]?mini"
+  ],
+  "capabilities": {
+    "image": true,
+    "tools": true,
+    "contextWindow": 1000000
+  },
+  "thinking": {
+    "toggle": false,
+    "efforts": [
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "readsPreserve": false,
+    "sendPreserve": false,
+    "defaultOn": true
+  },
+  "sampling": {
+    "off": {
+      "temperature": 1
+    },
+    "on": {
+      "temperature": 1
+    }
+  }
+}

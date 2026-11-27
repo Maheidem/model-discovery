@@ -1,0 +1,45 @@
+{
+  "id": "inkling2-small",
+  "label": "Inkling 2 Small",
+  "sources": [
+    "https://unsloth.ai/docs/models/inkling-2",
+    "https://huggingface.co/thinkingmachines/Inkling-2-Small"
+  ],
+  "match": [
+    "inkling[-_ ]?2[-_ ]?small"
+  ],
+  "capabilities": {
+    "image": true,
+    "tools": true,
+    "contextWindow": 1000000
+  },
+  "thinking": {
+    "toggle": false,
+    "efforts": [
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "readsPreserve": false,
+    "sendPreserve": false,
+    "defaultOn": true
+  },
+  "sampling": {
+    "off": {
+      "temperature": 1,
+      "topP": 1,
+      "topK": 0,
+      "minP": 0
+    },
+    "on": {
+      "temperature": 1,
+      "topP": 1,
+      "topK": 0,
+      "minP": 0
+    }
+  }
+}

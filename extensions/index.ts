@@ -14,13 +14,13 @@
  * Discovered providers persist across sessions in ~/.pi/agent/model-discovery.json
  */
 
+import { appendFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { BorderedLoader } from "@earendil-works/pi-coding-agent";
 import type { SelectItem } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
 	analyzeExplicitProfileRouting,
-	applyThinkingProfileRoute,
 	buildProfileSamplingParams,
 	describeChatTemplateKwargs,
 	describeProfileSampling,
@@ -364,15 +364,46 @@ export default async function (pi: ExtensionAPI) {
 		return profile ? { runtime, profile } : undefined;
 	}
 
+	/**
+	 * Debug switch `PI_MODEL_DISCOVERY_WIRE_LOG=<file>`: append one JSON line for
+	 * each request with the fields that this extension controls. The line holds
+	 * no message text and no API key (the request body has no key).
+	 */
+	function logWireRequest(payload: unknown, ctx: ExtensionContext): void {
+		const file = process.env.PI_MODEL_DISCOVERY_WIRE_LOG;
+		if (!file || !payload || typeof payload !== "object") return;
+		try {
+			const body = payload as Record<string, unknown>;
+			const messages = Array.isArray(body.messages) ? (body.messages as Array<{ content?: unknown }>) : [];
+			let imageCount = 0;
+			for (const message of messages) {
+				if (!Array.isArray(message.content)) continue;
+				for (const part of message.content as Array<{ type?: unknown }>) {
+					if (part?.type === "image_url") imageCount++;
+				}
+			}
+			const { messages: _messages, tools, ...fields } = body;
+			appendFileSync(
+				file,
+				`${JSON.stringify({
+					time: new Date().toISOString(),
+					provider: ctx.model?.provider,
+					piModel: ctx.model?.id,
+					thinkingLevel: ctx.thinkingLevel,
+					messageCount: messages.length,
+					imageCount,
+					toolCount: Array.isArray(tools) ? tools.length : 0,
+					request: fields,
+				})}\n`,
+			);
+		} catch {
+			/* a debug log must not break a request */
+		}
+	}
+
 	pi.on("before_provider_request", (event, ctx) => {
 		let payload: unknown = event.payload;
 		let touched = false;
-
-		const active = activeThinkingRoute(ctx);
-		if (active) {
-			payload = applyThinkingProfileRoute(payload, active.profile, active.runtime.repetitionPenaltyKey);
-			touched = true;
-		}
 
 		// Repair local tool schemas so llama.cpp-style grammar converters accept them.
 		const providerName = ctx.model?.provider;
@@ -385,6 +416,7 @@ export default async function (pi: ExtensionAPI) {
 			}
 		}
 
+		logWireRequest(payload, ctx);
 		return touched ? payload : undefined;
 	});
 

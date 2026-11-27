@@ -96,6 +96,74 @@ test("llama.cpp: /props supplies runtime context and the VLM flag", async () => 
 	const cfg = extractModelConfig(models[0]);
 	assert.equal(cfg.contextWindow, 32768);
 	assert.deepEqual(cfg.input, ["text", "image"]);
+	assert.equal(cfg.vision, true);
+	await close();
+});
+
+test("llama.cpp: one model with vision false gets text input only and the chat template", async () => {
+	const { url, close } = await jsonServer({
+		"/props": {
+			default_generation_settings: { n_ctx: 8192 },
+			modalities: { vision: false },
+			chat_template: "{% if enable_thinking %}{% endif %}",
+		},
+	});
+	const models = [{ id: "qwen3-8b" }];
+	await enrichModels(url, undefined, "llama.cpp", models);
+	const cfg = extractModelConfig(models[0]);
+	assert.equal(cfg.contextWindow, 8192);
+	assert.equal(cfg.vision, false);
+	assert.deepEqual(cfg.input, ["text"]);
+	assert.deepEqual(cfg.thinking, { chatTemplate: "{% if enable_thinking %}{% endif %}" });
+	await close();
+});
+
+test("llama.cpp: a router answer is applied to no model", async () => {
+	const { url, close } = await jsonServer({
+		"/props": { role: "router", default_generation_settings: { n_ctx: 4096 }, modalities: { vision: true } },
+	});
+	const single = [{ id: "only-model" }];
+	await enrichModels(url, undefined, "llama.cpp", single);
+	assert.equal((single[0] as Record<string, unknown>)["__md"], undefined);
+	const many = [{ id: "a" }, { id: "b" }];
+	await enrichModels(url, undefined, "llama.cpp", many);
+	for (const m of many) assert.equal((m as Record<string, unknown>)["__md"], undefined);
+	await close();
+});
+
+test("llama.cpp: /props is applied only to the model that it is for", async () => {
+	const props = {
+		default_generation_settings: { n_ctx: 16384 },
+		modalities: { vision: true },
+		chat_template: "{{ messages }}",
+	};
+	for (const [label, extra, id] of [
+		["model_alias", { model_alias: "gemma4-e4b" }, "gemma4-e4b"],
+		["file name of model_path", { model_path: "/models/gemma-4-e4b-Q4.gguf" }, "gemma-4-e4b-Q4.gguf"],
+		["file name with no .gguf", { model_path: "/models/gemma-4-e4b-Q4.gguf" }, "gemma-4-e4b-Q4"],
+	] as const) {
+		const { url, close } = await jsonServer({ "/props": { ...props, ...extra } });
+		const models = [{ id: "other-model" }, { id }];
+		await enrichModels(url, undefined, "llama.cpp", models);
+		const other = extractModelConfig(models[0]);
+		assert.equal(other.contextWindow, null, label);
+		assert.equal(other.vision, null, label);
+		assert.equal(other.thinking, null, label);
+		const target = extractModelConfig(models[1]);
+		assert.equal(target.contextWindow, 16384, label);
+		assert.equal(target.vision, true, label);
+		assert.equal(target.thinking?.chatTemplate, "{{ messages }}", label);
+		await close();
+	}
+});
+
+test("llama.cpp: /props that matches no model of two is applied to no model", async () => {
+	const { url, close } = await jsonServer({
+		"/props": { model_alias: "c", default_generation_settings: { n_ctx: 4096 }, modalities: { vision: true } },
+	});
+	const models = [{ id: "a" }, { id: "b" }];
+	await enrichModels(url, undefined, "llama.cpp", models);
+	for (const m of models) assert.equal(extractModelConfig(m).contextWindow, null);
 	await close();
 });
 
@@ -152,6 +220,109 @@ test("oMLX: status supplies effective context, max tokens, load state, thinking"
 	assert.notEqual(other.loaded, true);
 	assert.equal(other.reasoning, null);
 	await close();
+});
+
+test("oMLX: status supplies the model type, the vision fact and the thinking fields", async () => {
+	const { url, close } = await jsonServer({
+		"/v1/models/status": {
+			models: [
+				{
+					id: "Huihui-Qwen3.8-27B-abliterated-mlx-4Bit",
+					model_alias: "Qwen3.8-27B",
+					engine_type: "vlm",
+					model_type: "vlm",
+					thinking_default: true,
+					preserve_thinking_default: true,
+					reasoning_efforts: ["low", "medium", "xhigh"],
+				},
+				{
+					id: "gemma-4-e4b",
+					model_type: "vlm",
+					thinking_default: false,
+					preserve_thinking_default: true,
+					reasoning_efforts: null,
+				},
+				{
+					id: "Inkling-2-Mini",
+					model_type: "vlm",
+					thinking_default: null,
+					preserve_thinking_default: null,
+					reasoning_efforts: [],
+				},
+				{ id: "text-only", engine_type: "batched", model_type: "llm", thinking_default: null },
+				{ id: "Qwen3-ASR", engine_type: "audio_stt", model_type: "audio_stt" },
+				{ id: "engine-only", engine_type: "embedding" },
+			],
+		},
+	});
+	const models = [
+		{ id: "Qwen3.8-27B" },
+		{ id: "gemma-4-e4b" },
+		{ id: "Inkling-2-Mini" },
+		{ id: "text-only" },
+		{ id: "Qwen3-ASR" },
+		{ id: "engine-only" },
+	];
+	await enrichModels(url, undefined, "oMLX", models);
+	const [qwen, gemma, inkling, textOnly, asr, engineOnly] = models.map(extractModelConfig);
+
+	// The alias of /v1/models gets the status entry of the real name.
+	assert.equal(qwen.modelType, "vlm");
+	assert.equal(qwen.vision, true);
+	assert.deepEqual(qwen.input, ["text", "image"]);
+	assert.equal(qwen.reasoning, true);
+	assert.deepEqual(qwen.thinking, {
+		thinkingDefault: true,
+		preserveThinkingDefault: true,
+		reasoningEfforts: ["low", "medium", "xhigh"],
+	});
+
+	assert.deepEqual(gemma.thinking, { thinkingDefault: false, preserveThinkingDefault: true, reasoningEfforts: null });
+	assert.equal(gemma.reasoning, null);
+
+	// null and [] stay as they are: they have a meaning.
+	assert.deepEqual(inkling.thinking, { thinkingDefault: null, preserveThinkingDefault: null, reasoningEfforts: [] });
+
+	assert.equal(textOnly.modelType, "llm");
+	assert.equal(textOnly.vision, false);
+	assert.deepEqual(textOnly.input, ["text"]);
+	assert.deepEqual(textOnly.thinking, {
+		thinkingDefault: null,
+		preserveThinkingDefault: null,
+		reasoningEfforts: null,
+	});
+
+	// An entry with no thinking field gives no thinking report.
+	assert.equal(asr.modelType, "audio_stt");
+	assert.equal(asr.vision, null);
+	assert.equal(asr.thinking, null);
+	assert.equal(engineOnly.modelType, "embedding");
+	await close();
+});
+
+test("oMLX: model_type on a /v1/models entry gives the model type and vision with no enrichment", () => {
+	const vlm = extractModelConfig({ id: "Qwen3.8-27B", model_type: "vlm" });
+	assert.equal(vlm.modelType, "vlm");
+	assert.equal(vlm.vision, true);
+	assert.deepEqual(vlm.input, ["text", "image"]);
+	const llm = extractModelConfig({ id: "text-only", model_type: "llm" });
+	assert.equal(llm.vision, false);
+	assert.deepEqual(llm.input, ["text"]);
+	const stt = extractModelConfig({ id: "Qwen3-ASR", model_type: "audio_stt" });
+	assert.equal(stt.modelType, "audio_stt");
+	assert.equal(stt.vision, null);
+});
+
+test("vision is a server fact: positive signs give true, no sign gives null", () => {
+	assert.equal(extractModelConfig({ id: "m" }).vision, null);
+	assert.equal(extractModelConfig({ id: "m" }).modelType, null);
+	assert.equal(extractModelConfig({ id: "m" }).thinking, null);
+	assert.equal(extractModelConfig({ id: "m", status: { args: ["--mmproj", "p.gguf"] } }).vision, true);
+	assert.equal(extractModelConfig({ id: "m", capabilities: ["vision"] }).vision, true);
+	assert.equal(extractModelConfig({ id: "m", architecture: { input_modalities: ["text", "image"] } }).vision, true);
+	assert.equal(extractModelConfig({ id: "m", architecture: { input_modalities: ["text"] } }).vision, false);
+	// A positive sign wins over `model_type: llm`.
+	assert.equal(extractModelConfig({ id: "m", model_type: "llm", capabilities: ["vision"] }).vision, true);
 });
 
 test("oMLX: /v1/models values still win over enrichment", async () => {
