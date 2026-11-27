@@ -2,9 +2,10 @@
  * Model Discovery Extension
  *
  * Single entry point: /discover — opens a full TUI to manage OpenAI-compatible
- * endpoints (llama.cpp, oMLX, Ollama, vLLM, ...). Reads the actual
- * server-reported configuration (no hardcoded model database) and asks for
- * anything the server doesn't provide.
+ * endpoints (llama.cpp, oMLX, Ollama, vLLM, ...). `resolveModel()` of
+ * `model-plan.ts` decides the settings of each model. The order is: the setting
+ * of the user, then the server report, then the family file (`families/`), then
+ * a fixed default.
  *
  * Usage:
  *   /discover                    # open the management UI
@@ -15,24 +16,38 @@
  */
 
 import { appendFileSync } from "node:fs";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+	ProviderModelConfig,
+} from "@earendil-works/pi-coding-agent";
 import { BorderedLoader } from "@earendil-works/pi-coding-agent";
 import type { SelectItem } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
 	analyzeExplicitProfileRouting,
+	analyzeThinkingProfileRoutes,
 	buildProfileSamplingParams,
 	describeChatTemplateKwargs,
 	describeProfileSampling,
 	expandAdaptiveProfileRouters,
 	expandModelProfiles,
+	extensionThinkingCompat,
+	KNOWN_REASONING_EFFORTS,
+	LEGACY_LEVEL_KINDS,
 	profileModelId,
 	repetitionPenaltyKeyForServer,
+	routingLevelsFromProfiles,
 	THINKING_LEVELS,
 	type ModelProfile,
 	type ModelProfileRouting,
+	type ModelThinkingPlan,
 	type ProfileSampling,
+	type ThinkingControls,
 	type ThinkingLevel,
+	type ThinkingLevelMap,
+	type ThinkingProfileKind,
 	type ThinkingProfileRoutes,
 	validateModelProfile,
 	validateProfileSampling,
@@ -50,7 +65,9 @@ import {
 	repairRequestToolSchemas,
 	type ToolSchemaRepairReport,
 } from "./schema-repair.ts";
-import { createDiscoveryApplication } from "./application.ts";
+import { createDiscoveryApplication, modelSettingPatch, patchModelOverride, type ModelSettingField } from "./application.ts";
+import { describeFamilyRegistry, loadFamilyRegistry, refreshFamilies } from "./family-store.ts";
+import { resolveModel, thinkingTransportForServer, type ModelPlanSource, type ResolvedModel } from "./model-plan.ts";
 import { CONFIG_PATH } from "./config.ts";
 import { COMMAND_NAME } from "./metadata.ts";
 import { completeDiscoverArgs, DISCOVER_USAGE, parseDiscoverArgs } from "./commands.ts";
@@ -78,10 +95,13 @@ import {
 	buildPresetsSnapshot,
 	buildRoutingSnapshot,
 	buildSourcePickerSnapshot,
+	hiddenTag,
+	presetDefaultsKey,
 	presetFieldKey,
 	presetKey,
 	PRESET_FIELD_ORDER,
 	type PresetField,
+	type PresetsPanelDefaults,
 } from "./ui/endpoint-panel.ts";
 import {
 	ADD_FALLBACK_CTX_KEY,
@@ -158,11 +178,30 @@ export default async function (pi: ExtensionAPI) {
 	};
 	const thinkingRoutes = new Map<string, RuntimeThinkingRoutes>();
 	const fixedProfileLabels = new Map<string, string>();
+	/** Base models that send the recommended defaults: the label and the preset name of each level. */
+	const baseDefaultLabels = new Map<
+		string,
+		{ label: string; levelSlugs: Record<ThinkingLevel, string>; reasoning: boolean }
+	>();
 	/** Providers whose outgoing tool schemas get local grammar compatibility repair. */
 	const schemaRepairProviders = new Set<string>();
 	/** Repair notices already surfaced, so a per-request hook never spams the log. */
 	const schemaRepairNotices = new Set<string>();
 	const routeKey = (providerName: string, modelId: string): string => `${providerName}/${modelId}`;
+
+	// The family data in use. `/discover families update` replaces it.
+	let familyRegistry = loadFamilyRegistry();
+	// Look for new family data in the background. The start does not wait for it.
+	// New data applies at the next start or reload.
+	void refreshFamilies().catch(() => undefined);
+
+	/** The effective settings of one model. All screens and `registerProvider` use this result. */
+	function resolveFor(source: ModelPlanSource, config: ModelConfig, serverType: string | undefined): ResolvedModel {
+		const type = serverType ?? "OpenAI-compatible";
+		return resolveModel(source, config, familyRegistry, type, {
+			repetitionPenaltyKey: repetitionPenaltyKeyForServer(type),
+		});
+	}
 
 	/**
 	 * llama.cpp (and llama-swap / LM Studio / LiteLLM routes that forward to it) has
@@ -192,70 +231,100 @@ export default async function (pi: ExtensionAPI) {
 	// Provider registration with Pi's model registry
 	// -----------------------------------------------------------------------
 
+	/** A base model as `registerProvider` gives it to pi. */
+	type RegisteredBaseModel = {
+		id: string;
+		name: string;
+		reasoning: boolean;
+		input: ("text" | "image")[];
+		cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+		contextWindow: number;
+		maxTokens: number;
+		compat: Record<string, unknown>;
+		thinkingLevelMap?: ThinkingLevelMap;
+		samplingParamsByThinkingLevel?: Record<ThinkingLevel, Record<string, unknown>>;
+	};
+
 	async function registerProvider(
 		provider: DiscoveredProvider,
 		prefetched?: { models: Record<string, unknown>[]; serverType: string },
 		signal: AbortSignal = AbortSignal.timeout(2_000),
-	): Promise<{ models: ModelConfig[]; rawModels: Record<string, unknown>[]; serverType: string; profileCount: number }> {
+	): Promise<{
+		/** The models that are registered. Hidden models are not in this list. */
+		models: ModelConfig[];
+		rawModels: Record<string, unknown>[];
+		serverType: string;
+		profileCount: number;
+	}> {
 		const { models, serverType } = prefetched ?? (await fetchModels(provider.baseUrl, provider.apiKey, signal));
 		if (models.length === 0) throw new Error("No models found at this endpoint.");
 
 		const routePrefix = `${provider.name}/`;
-		for (const key of thinkingRoutes.keys()) {
-			if (key.startsWith(routePrefix)) thinkingRoutes.delete(key);
-		}
-		for (const key of fixedProfileLabels.keys()) {
-			if (key.startsWith(routePrefix)) fixedProfileLabels.delete(key);
+		for (const labels of [thinkingRoutes, fixedProfileLabels, baseDefaultLabels]) {
+			for (const key of labels.keys()) {
+				if (key.startsWith(routePrefix)) labels.delete(key);
+			}
 		}
 		const compat: Record<string, unknown> = { ...provider.compat };
 		if (shouldRepairToolSchemas(provider, serverType)) schemaRepairProviders.add(provider.name);
 		else schemaRepairProviders.delete(provider.name);
-		if (serverType === "oMLX") {
-			// Preserve the pre-profile base-model behavior. Fixed and adaptive profile
-			// aliases supply their own complete chat-template kwargs independently.
-			if (compat.thinkingFormat === undefined) compat.thinkingFormat = "qwen-chat-template";
-			if (compat.supportsReasoningEffort === undefined) compat.supportsReasoningEffort = true;
-		}
 
 		// NOTE: Pi's applyExtension() spreads model definitions but does NOT merge
 		// provider-level compat into individual models. So we must attach compat
-		// to each model directly — otherwise getCompat(model) returns no thinkingFormat.
+		// to each model directly.
 
+		const repetitionPenaltyKey = repetitionPenaltyKeyForServer(serverType);
 		const configs = models.map(extractModelConfig);
-		const baseModels = configs.map((c) => {
-			const ov = provider.modelOverrides?.[c.id];
-			// For oMLX, auto-detect reasoning capability on Qwen models
-			const serverReasoning =
-				serverType === "oMLX" && !c.reasoning
-					? /^qwen/i.test(c.id) || /^qwen/i.test(c.name)
-					: false;
-			const reasoning = ov?.reasoning ?? c.reasoning ?? serverReasoning;
-			return {
-				id: c.id,
-				name: c.name,
-				reasoning,
-				input: ov?.input ?? c.input ?? ["text"],
+		const plans = new Map<string, ModelThinkingPlan>();
+		const registeredConfigs: ModelConfig[] = [];
+		const baseModels: RegisteredBaseModel[] = [];
+		for (const config of configs) {
+			const resolved = resolveModel(provider, config, familyRegistry, serverType, { repetitionPenaltyKey });
+			// A hidden model (for example an embedding model) is not registered.
+			if (resolved.hidden) continue;
+			registeredConfigs.push(config);
+			if (resolved.plan) plans.set(config.id, resolved.plan);
+			const base: RegisteredBaseModel = {
+				id: config.id,
+				name: config.name,
+				reasoning: resolved.reasoning,
+				input: resolved.input,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				contextWindow: ov?.contextWindow ?? c.contextWindow ?? provider.defaultContextWindow ?? 128_000,
-				maxTokens: ov?.maxTokens ?? c.maxTokens ?? provider.defaultMaxTokens ?? 16_384,
-				compat: compat, // attach compat to each model (Pi's applyExtension doesn't merge provider-level compat)
+				contextWindow: resolved.contextWindow,
+				maxTokens: resolved.maxTokens,
+				compat,
 			};
-		});
-		const expandedProfiles = expandModelProfiles(
-			baseModels.map((model) => ({ ...model, input: model.input as ("text" | "image")[] })),
-			provider.modelProfiles,
-			{ repetitionPenaltyKey: repetitionPenaltyKeyForServer(serverType) },
-		);
+			if (resolved.baseLevelParams) {
+				// The thinking values and the sampling values of each level come from this extension.
+				base.compat = extensionThinkingCompat(compat);
+				base.thinkingLevelMap = resolved.baseThinkingLevelMap;
+				base.samplingParamsByThinkingLevel = resolved.baseLevelParams;
+			}
+			baseModels.push(base);
+			if (resolved.defaultsOn && resolved.defaults) {
+				baseDefaultLabels.set(routeKey(provider.name, config.id), {
+					label: resolved.family?.label ?? "server profile",
+					levelSlugs: resolved.defaults.levelSlugs,
+					reasoning: resolved.reasoning,
+				});
+			}
+		}
+		const expansionOptions = {
+			repetitionPenaltyKey,
+			thinkingTransport: thinkingTransportForServer(familyRegistry, serverType),
+			plans,
+		};
+		const expandedProfiles = expandModelProfiles(baseModels, provider.modelProfiles, expansionOptions);
 		const expandedRouters = expandAdaptiveProfileRouters(
 			expandedProfiles.models,
 			provider.modelProfiles,
 			provider.modelProfileRouting,
+			expansionOptions,
 		);
 		for (const warning of [...expandedProfiles.warnings, ...expandedRouters.warnings]) {
 			console.error(`[model-discovery] ${provider.name}: ${warning}`);
 		}
 
-		const repetitionPenaltyKey = repetitionPenaltyKeyForServer(serverType);
 		for (const [modelId, routes] of expandedRouters.runtimeRoutes) {
 			thinkingRoutes.set(routeKey(provider.name, modelId), { routes, repetitionPenaltyKey });
 		}
@@ -267,20 +336,31 @@ export default async function (pi: ExtensionAPI) {
 			}
 		}
 
-		// OpenAI SDK appends /chat/completions to baseUrl.
-		// Ensure baseUrl ends with /v1 so the full URL is .../v1/chat/completions.
-		const sdkBaseUrl = provider.baseUrl.replace(/\/v1\/?$/, "") + "/v1";
-		pi.registerProvider(provider.name, {
-			name: `${serverType} (${provider.name})`,
-			baseUrl: sdkBaseUrl,
-			apiKey: provider.apiKey || "local",
-			api: "openai-completions",
-			models: expandedRouters.models,
-		});
+		if (expandedRouters.models.length === 0) {
+			// Each model of this source is hidden. A provider with no model is not registered.
+			try {
+				pi.unregisterProvider(provider.name);
+			} catch {
+				/* The provider was not registered. */
+			}
+		} else {
+			// OpenAI SDK appends /chat/completions to baseUrl.
+			// Ensure baseUrl ends with /v1 so the full URL is .../v1/chat/completions.
+			const sdkBaseUrl = provider.baseUrl.replace(/\/v1\/?$/, "") + "/v1";
+			pi.registerProvider(provider.name, {
+				name: `${serverType} (${provider.name})`,
+				baseUrl: sdkBaseUrl,
+				apiKey: provider.apiKey || "local",
+				api: "openai-completions",
+				// `ProviderChatModelConfig` has no type for `samplingParamsByThinkingLevel`.
+				// pi keeps the field at runtime and merges it into each request (pi 1.6 and later).
+				models: expandedRouters.models as ProviderModelConfig[],
+			});
+		}
 
 		provider.serverType = serverType;
 		return {
-			models: configs,
+			models: registeredConfigs,
 			rawModels: models,
 			serverType,
 			profileCount: expandedProfiles.profileCount + expandedRouters.routerCount,
@@ -422,10 +502,23 @@ export default async function (pi: ExtensionAPI) {
 
 	const updateThinkingProfileStatus = (ctx: ExtensionContext): void => {
 		const active = activeThinkingRoute(ctx);
-		const fixed = ctx.model ? fixedProfileLabels.get(routeKey(ctx.model.provider, ctx.model.id)) : undefined;
+		const key = ctx.model ? routeKey(ctx.model.provider, ctx.model.id) : undefined;
+		const fixed = key ? fixedProfileLabels.get(key) : undefined;
+		const base = key ? baseDefaultLabels.get(key) : undefined;
+		// A model with reasoning off always uses the preset of the level "off".
+		const level: ThinkingLevel =
+			base?.reasoning && (THINKING_LEVELS as readonly string[]).includes(ctx.thinkingLevel ?? "")
+				? (ctx.thinkingLevel as ThinkingLevel)
+				: "off";
 		ctx.ui.setStatus(
 			"model-discovery-thinking-profile",
-			active ? `preset: ${active.profile.slug}` : fixed ? `fixed preset: ${fixed}` : undefined,
+			active
+				? `preset: ${active.profile.slug}`
+				: fixed
+					? `fixed preset: ${fixed}`
+					: base
+						? `defaults: ${base.label} · ${base.levelSlugs[level]}`
+						: undefined,
 		);
 	};
 	pi.on("session_start", (_event, ctx) => updateThinkingProfileStatus(ctx));
@@ -479,23 +572,41 @@ export default async function (pi: ExtensionAPI) {
 
 
 
-	function modelFlags(c: ModelConfig, ov?: ModelOverride): string {
+	function modelFlags(resolved: ResolvedModel): string {
 		const flags: string[] = [];
-		const input = ov?.input ?? c.input;
-		const reasoning = ov?.reasoning ?? c.reasoning;
-		if (input?.includes("image")) flags.push("vision");
-		if (reasoning === true) flags.push("reasoning");
-		if (reasoning === null && ov?.reasoning === undefined) flags.push("reasoning?");
-		if (c.loaded === true) flags.push("loaded");
+		if (resolved.vision) flags.push("vision");
+		if (resolved.reasoning) flags.push("reasoning");
+		if (resolved.config.loaded === true) flags.push("loaded");
 		return flags.length > 0 ? ` [${flags.join(", ")}]` : "";
 	}
 
-	function modelDescription(c: ModelConfig, provider?: DiscoveredProvider): string {
-		const ov = provider?.modelOverrides?.[c.id];
-		const ctxVal = ov?.contextWindow ?? c.contextWindow ?? provider?.defaultContextWindow ?? null;
-		const maxVal = ov?.maxTokens ?? c.maxTokens ?? provider?.defaultMaxTokens ?? null;
-		const ovMark = ov && Object.keys(ov).length > 0 ? " (edited)" : "";
-		return `ctx ${fmt(ctxVal)} · max ${fmt(maxVal)} · ${c.source}${ovMark}`;
+	function modelDescription(resolved: ResolvedModel, source?: ModelPlanSource): string {
+		const override = source?.modelOverrides?.[resolved.config.id];
+		const ovMark = override && Object.keys(override).length > 0 ? " (edited)" : "";
+		return `ctx ${fmt(resolved.contextWindow)} · max ${fmt(resolved.maxTokens)} · ${resolved.config.source}${ovMark}`;
+	}
+
+	/** One model row of a source panel or of a model picker. */
+	function modelRow(provider: DiscoveredProvider, config: ModelConfig, serverType: string | undefined) {
+		const resolved = resolveFor(provider, config, serverType);
+		return {
+			id: config.id,
+			flags: modelFlags(resolved),
+			summary: modelDescription(resolved, provider),
+			presetCount: app.profiles(provider, config.id).length,
+			routingSummary: routingSummaryOf(provider, config.id),
+			hiddenKind: resolved.hidden ? resolved.kind : undefined,
+		};
+	}
+
+	/** The thinking controls of one model. `undefined` = the model has no thinking profile. */
+	function thinkingControlsOf(provider: DiscoveredProvider, config: ModelConfig): ThinkingControls | undefined {
+		return resolveFor(provider, config, provider.serverType).thinking;
+	}
+
+	/** A model of the cached catalogue of a source. */
+	function cachedModelConfig(provider: DiscoveredProvider, modelId: string): ModelConfig | undefined {
+		return (provider.cachedModels ?? []).map(extractModelConfig).find((config) => config.id === modelId);
 	}
 
 	function optionalBooleanDescription(value: boolean | undefined): string {
@@ -550,7 +661,8 @@ export default async function (pi: ExtensionAPI) {
 		profile: ModelProfile,
 		previousSlug?: string,
 	): string | null {
-		const profileError = validateModelProfile(profile);
+		// The thinking values must be values that this model accepts.
+		const profileError = validateModelProfile(profile, thinkingControlsOf(provider, config));
 		if (profileError) return profileError;
 
 		const aliasId = profileModelId(config.id, profile.slug);
@@ -629,24 +741,45 @@ export default async function (pi: ExtensionAPI) {
 
 
 
-	function conventionalPreset(profiles: readonly ModelProfile[], kind: "off" | "low" | "medium" | "xhigh") {
-		return profiles.find((profile) => {
-			const kwargs = profile.chatTemplateKwargs;
-			return kind === "off"
-				? kwargs?.enable_thinking === false
-				: kwargs?.enable_thinking !== false && kwargs?.reasoning_effort === kind;
-		});
+	/** The preset kind that each pi level needs for one model. A model with no thinking profile uses the legacy kinds. */
+	function levelKindsOf(provider: DiscoveredProvider, modelId: string): Record<ThinkingLevel, ThinkingProfileKind> {
+		const config = cachedModelConfig(provider, modelId);
+		return (config ? resolveFor(provider, config, provider.serverType).levelKinds : undefined) ?? LEGACY_LEVEL_KINDS;
 	}
 
-	function defaultProfileRouting(profiles: readonly ModelProfile[]): ModelProfileRouting {
-		const off = conventionalPreset(profiles, "off")?.slug ?? "";
-		const low = conventionalPreset(profiles, "low")?.slug ?? "";
-		const medium = conventionalPreset(profiles, "medium")?.slug ?? "";
-		const xhigh = conventionalPreset(profiles, "xhigh")?.slug ?? "";
+	/** The different preset kinds of a level map, in level order. */
+	function kindsOf(levelKinds: Record<ThinkingLevel, ThinkingProfileKind>): string[] {
+		return [...new Set(THINKING_LEVELS.map((level) => levelKinds[level]))];
+	}
+
+	/**
+	 * The conventional routing: each pi level gets the one preset of the kind
+	 * that the level needs. `levels` is not set when a kind has no preset or
+	 * more than one preset.
+	 */
+	function conventionalLevels(
+		profiles: readonly ModelProfile[],
+		levelKinds: Record<ThinkingLevel, ThinkingProfileKind>,
+	): { levels?: Record<ThinkingLevel, string>; error?: string } {
+		const analysis = analyzeThinkingProfileRoutes(profiles, levelKinds);
+		if (analysis.routes) return { levels: routingLevelsFromProfiles(analysis.routes) };
+		return {
+			error: `The layout needs one preset for each kind: ${kindsOf(levelKinds).join(", ")} (${analysis.issues.join("; ")}). Map the levels manually.`,
+		};
+	}
+
+	/** A new routing: each level gets the first preset of its kind, or no preset. */
+	function defaultProfileRouting(
+		profiles: readonly ModelProfile[],
+		levelKinds: Record<ThinkingLevel, ThinkingProfileKind>,
+	): ModelProfileRouting {
+		const { byKind } = analyzeThinkingProfileRoutes(profiles, levelKinds);
 		return {
 			enabled: true,
 			aliasSlug: "adaptive",
-			levels: { off, minimal: low, low, medium, high: xhigh, xhigh, max: xhigh },
+			levels: Object.fromEntries(
+				THINKING_LEVELS.map((level) => [level, byKind[levelKinds[level]]?.[0]?.slug ?? ""]),
+			) as Record<ThinkingLevel, string>,
 		};
 	}
 
@@ -844,6 +977,47 @@ export default async function (pi: ExtensionAPI) {
 		emitText(ctx, "Authentication saved but could not be validated; the last known-good catalogue was retained.", "warning");
 	}
 
+	function diagnosticsLines(): string[] {
+		return buildDiagnosticsLines(app.listSources(), describeFamilyRegistry(familyRegistry));
+	}
+
+	/**
+	 * `/discover families update`: get new family data now, use it, and register
+	 * each source again from its cached catalogue.
+	 */
+	async function runFamiliesUpdate(ctx: ExtensionCommandContext): Promise<void> {
+		const work = async () => {
+			const refresh = await refreshFamilies({ force: true });
+			familyRegistry = loadFamilyRegistry();
+			const failures: string[] = [];
+			for (const provider of app.listSources()) {
+				const catalog = cachedCatalog(provider);
+				if (!catalog) continue;
+				try {
+					await registerProvider(provider, catalog);
+				} catch (error) {
+					failures.push(`${provider.name}: ${errorMessage(error)}`);
+				}
+			}
+			return { refresh, failures };
+		};
+		const result = ctx.mode === "tui" ? await runLoader(ctx, "Getting model family data...", work) : await work();
+		if (!result) return;
+		updateThinkingProfileStatus(ctx);
+		const { refresh, failures } = result;
+		const lines = [
+			`Family data update: ${refresh.status}${refresh.reason ? ` (${refresh.reason})` : ""}`,
+			...describeFamilyRegistry(familyRegistry),
+		];
+		// A rejected file of a download that is not in use is not in the registry lines.
+		for (const entry of refresh.rejected) {
+			const line = `Rejected ${entry.file}: ${entry.error}`;
+			if (!lines.includes(line)) lines.push(line);
+		}
+		for (const failure of failures) lines.push(`Registration failed for ${failure}`);
+		await showReport(ctx, "Model family data", lines.join("\n"));
+	}
+
 	/** Host for `ui/advanced-panel.ts` — maintenance hub + per-source config entries. */
 	async function advancedPanel(ctx: ExtensionCommandContext): Promise<void> {
 		let page = 0;
@@ -878,7 +1052,7 @@ export default async function (pi: ExtensionAPI) {
 							return { kind: "updated" };
 						}
 						if (key === BACK_KEY) return { kind: "close", action: "back" };
-						if (key === "rescan-all" || key === "doctor" || key === "paths" || key === "help-verbs") return { kind: "close", action: key };
+						if (["rescan-all", "families-update", "doctor", "paths", "help-verbs"].includes(key)) return { kind: "close", action: key };
 						if (key.startsWith("cfg:source:") && key.endsWith(":advanced")) return { kind: "close", action: key };
 						return { kind: "none" };
 					},
@@ -890,8 +1064,12 @@ export default async function (pi: ExtensionAPI) {
 				await runRescanAll(ctx);
 				continue;
 			}
+			if (action === "families-update") {
+				await runFamiliesUpdate(ctx);
+				continue;
+			}
 			if (action === "doctor") {
-				await showReport(ctx, "Model Discovery diagnostics", buildDiagnosticsLines(app.listSources()).join("\n"));
+				await showReport(ctx, "Model Discovery diagnostics", diagnosticsLines().join("\n"));
 				continue;
 			}
 			if (action === "paths") {
@@ -925,6 +1103,7 @@ export default async function (pi: ExtensionAPI) {
 		armed: readonly string[],
 	) {
 		const configs = (live?.models ?? provider.cachedModels ?? []).map(extractModelConfig);
+		const serverType = live?.serverType ?? provider.serverType;
 		return {
 			version: modelDiscoveryVersion(),
 			source: {
@@ -940,13 +1119,7 @@ export default async function (pi: ExtensionAPI) {
 				lastScanned: provider.lastScanned,
 				lastScanError: provider.lastScanError ? redactSecret(provider.lastScanError, provider.apiKey) : undefined,
 			},
-			models: configs.map((c): { id: string; flags: string; summary: string; presetCount: number; routingSummary: string } => ({
-				id: c.id,
-				flags: modelFlags(c, provider.modelOverrides?.[c.id]),
-				summary: modelDescription(c, provider),
-				presetCount: app.profiles(provider, c.id).length,
-				routingSummary: routingSummaryOf(provider, c.id),
-			})),
+			models: configs.map((config) => modelRow(provider, config, serverType)),
 			page,
 			armed,
 		};
@@ -1170,36 +1343,34 @@ export default async function (pi: ExtensionAPI) {
 					...deps,
 					snapshot: () => buildModelPanel().snapshot,
 					apply: (key, raw) => {
-						const ov = provider.modelOverrides?.[config.id] ?? {};
-						const write = (patch: ModelOverride, feedback: string) => {
-							provider.modelOverrides = { ...provider.modelOverrides, [config.id]: { ...ov, ...patch } };
+						const resolved = resolveFor(provider, config, prefetched.serverType);
+						const write = (patch: Parameters<typeof patchModelOverride>[2], feedback: string) => {
+							patchModelOverride(provider, config.id, patch);
 							app.saveSource(provider);
 							void persistModelOverrideRegister(ctx, provider, prefetched, feedback);
 						};
 						if (key === `model:${config.id}:contextWindow` || key === `model:${config.id}:maxTokens`) {
+							const field = key.endsWith("maxTokens") ? "maxTokens" : "contextWindow";
 							if (!raw.trim()) {
-								const next = { ...ov };
-								delete next[key.endsWith("maxTokens") ? "maxTokens" : "contextWindow"];
-								provider.modelOverrides = { ...provider.modelOverrides, [config.id]: next };
-								if (Object.keys(next).length === 0) delete provider.modelOverrides;
-								app.saveSource(provider);
-								void persistModelOverrideRegister(ctx, provider, prefetched, "Override removed");
+								write({ [field]: undefined }, "Override removed");
 								return null;
 							}
 							const n = positiveInt(raw);
 							if (n === null) return "Enter a positive whole number greater than zero.";
-							write(key.endsWith("maxTokens") ? { maxTokens: n } : { contextWindow: n }, `${key.endsWith("maxTokens") ? "Max output tokens" : "Context window"} saved as ${fmt(n)}`);
+							write({ [field]: n }, `${field === "maxTokens" ? "Max output tokens" : "Context window"} saved as ${fmt(n)}`);
 							return null;
 						}
-						if (key === `model:${config.id}:reasoning`) {
-							const on = raw !== "true";
-							write({ reasoning: on }, `Reasoning ${on ? "enabled" : "disabled"}`);
-							return null;
-						}
-						if (key === `model:${config.id}:vision`) {
-							const effInput = ov.input ?? config.input ?? ["text"];
-							const next = effInput.includes("image") ? ["text"] : [...new Set([...effInput, "image"])];
-							write({ input: next }, `Vision input ${effInput.includes("image") ? "disabled" : "enabled"}`);
+						const setting = key.match(/^model:(.+):(reasoning|vision|defaults|family|hidden)$/);
+						if (setting && setting[1] === config.id) {
+							const field = setting[2] as ModelSettingField;
+							// A toggle row gives the new value as "true" or "false". A cycle row gives the next choice.
+							const value = field === "defaults" || field === "hidden" ? (raw === "true" ? "on" : "off") : raw;
+							const result = modelSettingPatch(field, value, {
+								familyIds: familyRegistry.families.map((family) => family.id),
+								kind: resolved.kind,
+							});
+							if ("error" in result) return result.error;
+							write(result.patch, MODEL_SETTING_LABELS[field](value));
 							return null;
 						}
 						return `Unknown setting '${key}'.`;
@@ -1215,8 +1386,9 @@ export default async function (pi: ExtensionAPI) {
 								delete provider.modelOverrides[config.id];
 								if (Object.keys(provider.modelOverrides).length === 0) provider.modelOverrides = undefined;
 							}
+							app.saveSource(provider);
 							void persistModelOverrideRegister(ctx, provider, prefetched, "Model overrides cleared");
-							return { kind: "updated", message: "Overrides cleared — server values are effective again." };
+							return { kind: "updated", message: "Overrides cleared. The automatic values are in use again." };
 						}
 						if (key === `model:${config.id}:presets`) return { kind: "close", action: "presets" };
 						if (key === `routing:${config.id}`) return { kind: "close", action: "routing" };
@@ -1240,20 +1412,36 @@ export default async function (pi: ExtensionAPI) {
 
 		function buildModelPanel() {
 			const ov = provider.modelOverrides?.[config.id] ?? {};
+			const resolved = resolveFor(provider, config, prefetched.serverType);
 			return buildModelSnapshot({
 				version: modelDiscoveryVersion(),
 				sourceName: provider.name,
 				model: {
 					id: config.id,
-					flags: modelFlags(config, ov),
-					serverContextWindow: config.contextWindow ?? null,
-					serverMaxTokens: config.maxTokens ?? null,
-					serverReasoning: config.reasoning ?? null,
-					serverInput: config.input ?? [],
-					effectiveContextWindow: ov.contextWindow ?? config.contextWindow ?? provider.defaultContextWindow ?? null,
-					effectiveMaxTokens: ov.maxTokens ?? config.maxTokens ?? provider.defaultMaxTokens ?? null,
-					effectiveReasoning: ov.reasoning ?? config.reasoning ?? null,
-					effectiveInput: ov.input ?? config.input ?? ["text"],
+					flags: modelFlags(resolved),
+					serverContextWindow: config.contextWindow,
+					serverMaxTokens: config.maxTokens,
+					contextWindow: resolved.contextWindow,
+					contextWindowSource: resolved.contextWindowSource,
+					maxTokens: resolved.maxTokens,
+					maxTokensSource: resolved.maxTokensSource,
+					reasoning: resolved.reasoning,
+					reasoningSource: resolved.reasoningSource,
+					reasoningSetting: ov.reasoning === undefined ? "auto" : ov.reasoning ? "on" : "off",
+					vision: resolved.vision,
+					visionSource: resolved.visionSource,
+					visionSetting: ov.input === undefined ? "auto" : ov.input.includes("image") ? "on" : "off",
+					familyLabel: resolved.family?.label,
+					familySource: resolved.familySource,
+					familySetting: ov.family ?? "auto",
+					familyChoices: familyRegistry.families.map((family) => family.id),
+					thinking: resolved.thinking,
+					audio: resolved.audio,
+					tools: resolved.tools,
+					defaultsOn: resolved.defaultsOn,
+					hasDefaults: resolved.defaults !== undefined,
+					hidden: resolved.hidden,
+					kind: resolved.kind,
 					reportSource: config.source,
 					presetCount: app.profiles(provider, config.id).length,
 					routingSummary: routingSummaryOf(provider, config.id),
@@ -1264,6 +1452,15 @@ export default async function (pi: ExtensionAPI) {
 		}
 	}
 
+	/** The feedback text of a model setting change. */
+	const MODEL_SETTING_LABELS: Record<ModelSettingField, (value: string) => string> = {
+		defaults: (value) => `Recommended defaults ${value === "on" ? "on" : "off"}`,
+		family: (value) => (value === "auto" ? "Family found from the model name" : `Family set to ${value}`),
+		hidden: (value) => (value === "on" ? "Model hidden" : "Model shown"),
+		reasoning: (value) => (value === "auto" ? "Reasoning uses the automatic value" : `Reasoning ${value}`),
+		vision: (value) => (value === "auto" ? "Vision uses the automatic value" : `Vision ${value}`),
+	};
+
 	async function persistModelOverrideRegister(
 		ctx: ExtensionCommandContext,
 		provider: DiscoveredProvider,
@@ -1272,9 +1469,10 @@ export default async function (pi: ExtensionAPI) {
 	): Promise<void> {
 		try {
 			await registerProvider(provider, prefetched);
-			ctx.ui.notify(`${feedback}.`, "info");
+			updateThinkingProfileStatus(ctx);
+			emitText(ctx, `${feedback}.`);
 		} catch (error) {
-			ctx.ui.notify(`${feedback}. Provider registration remains on its previous state: ${errorMessage(error)}`, "warning");
+			emitText(ctx, `${feedback}. Provider registration remains on its previous state: ${errorMessage(error)}`, "warning");
 		}
 	}
 
@@ -1325,9 +1523,9 @@ export default async function (pi: ExtensionAPI) {
 		};
 	}
 
-	function draftIssues(draft: PresetDraft): string[] {
+	function draftIssues(draft: PresetDraft, controls?: ThinkingControls): string[] {
 		const profile = flatToProfile(draft.handle, draft.fields, draft.exposeAsModel);
-		const error = validateModelProfile(profile);
+		const error = validateModelProfile(profile, controls);
 		return error ? [error] : [];
 	}
 
@@ -1347,6 +1545,8 @@ export default async function (pi: ExtensionAPI) {
 		prefetched: { models: Record<string, unknown>[]; serverType: string },
 	): Promise<void> {
 		let page = 0;
+		const armed = new Set<string>();
+		const defaultsKey = presetDefaultsKey(config.id);
 		for (;;) {
 			const presets = app.profiles(provider, config.id);
 			const built = buildPresetsPanel(presets);
@@ -1357,6 +1557,18 @@ export default async function (pi: ExtensionAPI) {
 					apply: () => "Edit a preset to change its fields.",
 					activate: (key): PanelActionResult => {
 						if (key === `preset:${config.id}:add`) return { kind: "close", action: "add" };
+						if (key === defaultsKey) {
+							const defaults = presetDefaultsOf(provider, config, prefetched.serverType);
+							if (!defaults) return { kind: "error", message: "This model has no recommended presets." };
+							// The copy replaces stored presets: the first press arms the row.
+							if (defaults.panel.replaces.length && !armed.has(key)) {
+								armed.add(key);
+								const names = defaults.panel.replaces.map((slug) => `"${slug}"`).join(", ");
+								return { kind: "updated", message: `Press enter again to replace ${names} on "${config.id}".` };
+							}
+							armed.delete(key);
+							return { kind: "close", action: "defaults" };
+						}
 						if (key === `routing:${config.id}`) return { kind: "close", action: "routing" };
 						if (key === PAGE_PREV_KEY) {
 							page = Math.max(0, page - 1);
@@ -1367,14 +1579,22 @@ export default async function (pi: ExtensionAPI) {
 							return { kind: "updated" };
 						}
 						if (key === BACK_KEY) return { kind: "close", action: "back" };
-						const m = key.match(/^preset:(.+?):(.+)$/);
-						if (m && m[1] === config.id && m[2] !== "add") return { kind: "close", action: `edit:${m[2]}` };
+						const prefix = `preset:${config.id}:`;
+						if (key.startsWith(prefix) && key !== `${prefix}add`) return { kind: "close", action: `edit:${key.slice(prefix.length)}` };
 						return { kind: "none" };
 					},
 				}),
 			);
 			const action = result?.action;
 			if (!action || action === "back") return;
+			if (action === "defaults") {
+				await applyPresetDefaults(ctx, provider, config, prefetched);
+				continue;
+			}
+			if (action === "routing") {
+				await routingPanel(ctx, provider, config, allConfigs, prefetched);
+				continue;
+			}
 			if (action === "add") {
 				await presetEditor(ctx, provider, config, allConfigs, prefetched, {
 					handle: "thinking-medium",
@@ -1408,9 +1628,53 @@ export default async function (pi: ExtensionAPI) {
 				modelId: config.id,
 				presets: presets.map((p) => ({ slug: p.slug, summary: profileDescription(p, prefetched.serverType, app.profileRouting(provider, config.id) ?? undefined) })),
 				routingSummary: routingSummaryOf(provider, config.id),
+				defaults: presetDefaultsOf(provider, config, prefetched.serverType)?.panel,
+				armed: [...armed],
 				page,
 			});
 		}
+	}
+
+	/** The recommended presets of a model, and the facts that the presets panel shows about them. */
+	function presetDefaultsOf(provider: DiscoveredProvider, config: ModelConfig, serverType: string | undefined) {
+		const resolved = resolveFor(provider, config, serverType);
+		if (!resolved.defaults) return undefined;
+		const copied = new Set(resolved.defaults.presets.map((preset) => preset.slug));
+		const stored: unknown = provider.modelProfiles?.[config.id];
+		const replaces = (Array.isArray(stored) ? (stored as Array<{ slug?: unknown } | null>) : [])
+			.map((preset) => preset?.slug)
+			.filter((slug): slug is string => typeof slug === "string" && copied.has(slug));
+		const storedAlias = app.profileRouting(provider, config.id)?.aliasSlug;
+		const panel: PresetsPanelDefaults = {
+			label: resolved.family?.label ?? "the server profile",
+			presetCount: resolved.defaults.presets.length,
+			aliasSlug: storedAlias && !copied.has(storedAlias) ? storedAlias : resolved.defaults.routing.aliasSlug,
+			replaces,
+		};
+		return { defaults: resolved.defaults, panel };
+	}
+
+	/** Copy the recommended presets and routing into the config, then register the source again. */
+	async function applyPresetDefaults(
+		ctx: ExtensionCommandContext,
+		provider: DiscoveredProvider,
+		config: ModelConfig,
+		prefetched: { models: Record<string, unknown>[]; serverType: string },
+	): Promise<void> {
+		const found = presetDefaultsOf(provider, config, prefetched.serverType);
+		if (!found) {
+			emitText(ctx, `Model "${config.id}" has no recommended presets (it has no thinking control).`, "error");
+			return;
+		}
+		app.applyFamilyDefaults(provider, config.id, found.defaults);
+		const registered = await persistProfileChange(ctx, provider, prefetched);
+		if (!registered) return;
+		await refreshAdaptiveSelection(ctx, provider, config.id);
+		updateThinkingProfileStatus(ctx);
+		emitText(
+			ctx,
+			`Copied ${found.panel.presetCount} recommended preset(s) of ${found.panel.label} to "${config.id}". The alias "${profileModelId(config.id, found.panel.aliasSlug)}" is on.`,
+		);
 	}
 
 	function emptyPresetFields(): Record<PresetField, string> {
@@ -1427,6 +1691,9 @@ export default async function (pi: ExtensionAPI) {
 	): Promise<void> {
 		const armed = new Set<string>();
 		let page = 0;
+		// The thinking values that this model accepts. Not set = no thinking profile: each known value is allowed.
+		const controls = thinkingControlsOf(provider, config);
+		const efforts: readonly string[] = controls ? controls.efforts : KNOWN_REASONING_EFFORTS;
 		for (;;) {
 			const built = buildEditor();
 			const result = await runPanel(ctx, (deps) =>
@@ -1451,8 +1718,13 @@ export default async function (pi: ExtensionAPI) {
 							if (field === "enable_thinking" || field === "preserve_thinking") {
 								if (!["", "true", "false"].includes(value)) return "Choose omitted, true, or false.";
 							}
-							if (field === "reasoning_effort" && !["", "low", "medium", "xhigh"].includes(value)) {
-								return "Choose omitted, low, medium, or xhigh.";
+							if (field === "enable_thinking" && value !== "" && controls && !controls.toggle) {
+								return "This model has no enable_thinking switch.";
+							}
+							if (field === "reasoning_effort" && value !== "" && !efforts.includes(value)) {
+								return efforts.length
+									? `Choose omitted or one of: ${efforts.join(", ")}.`
+									: "This model does not read reasoning_effort.";
 							}
 							if (value !== "" && !Number.isFinite(Number(value)) && !["enable_thinking", "reasoning_effort", "preserve_thinking"].includes(field)) {
 								return "Enter a number, or leave blank for the server/model default.";
@@ -1469,7 +1741,7 @@ export default async function (pi: ExtensionAPI) {
 							return { kind: "updated", message: draft.exposeAsModel ? "Visible as a fixed model in /model." : "Hidden from /model (routing only)." };
 						}
 						if (key === `${base}:save`) {
-							const issues = draftIssues(draft);
+							const issues = draftIssues(draft, controls);
 							if (issues.length) return { kind: "error", message: issues[0] ?? "Invalid draft." };
 							const profile = flatToProfile(draft.handle, draft.fields, draft.exposeAsModel);
 							const validationError = validateProfileForProvider(provider, config, allConfigs, profile, draft.previousSlug);
@@ -1581,8 +1853,10 @@ export default async function (pi: ExtensionAPI) {
 				fields: draft.fields,
 				aliasId: profileModelId(config.id, draft.handle),
 				exposeAsModel: draft.exposeAsModel,
-				issues: draftIssues(draft),
+				issues: draftIssues(draft, controls),
 				isNew: draft.isNew,
+				effortChoices: controls?.efforts,
+				hasToggle: controls?.toggle,
 				armed: [...armed],
 				page,
 			});
@@ -1603,7 +1877,10 @@ export default async function (pi: ExtensionAPI) {
 			return;
 		}
 		const existing = app.profileRouting(provider, config.id);
-		const routing: ModelProfileRouting = existing ? { ...existing, levels: { ...existing.levels } } : defaultProfileRouting(profiles);
+		const levelKinds = resolveFor(provider, config, prefetched.serverType).levelKinds ?? LEGACY_LEVEL_KINDS;
+		const routing: ModelProfileRouting = existing
+			? { ...existing, levels: { ...existing.levels } }
+			: defaultProfileRouting(profiles, levelKinds);
 		const armed = new Set<string>();
 		for (;;) {
 			const analysis = analyzeExplicitProfileRouting(routing, app.profiles(provider, config.id));
@@ -1617,6 +1894,7 @@ export default async function (pi: ExtensionAPI) {
 				levels: { ...routing.levels } as Record<string, string>,
 				choices: app.profiles(provider, config.id).map((p) => p.slug),
 				issues: analysis.errors,
+				conventionalKinds: kindsOf(levelKinds),
 				armed: [...armed],
 			});
 			const result = await runPanel(ctx, (deps) =>
@@ -1633,6 +1911,7 @@ export default async function (pi: ExtensionAPI) {
 							levels: { ...routing.levels } as Record<string, string>,
 							choices: app.profiles(provider, config.id).map((p) => p.slug),
 							issues: analyzeExplicitProfileRouting(routing, app.profiles(provider, config.id)).errors,
+							conventionalKinds: kindsOf(levelKinds),
 							armed: [...armed],
 						}).snapshot,
 					apply: (key, raw) => {
@@ -1644,7 +1923,7 @@ export default async function (pi: ExtensionAPI) {
 							return null;
 						}
 						if (key === `routing:${config.id}:enabled`) {
-							routing.enabled = raw !== "true";
+							routing.enabled = raw === "true";
 							return null;
 						}
 						const lm = key.match(/^routing:(.+?):level:(.+)$/);
@@ -1658,15 +1937,10 @@ export default async function (pi: ExtensionAPI) {
 					},
 					activate: (key): PanelActionResult => {
 						if (key === `routing:${config.id}:conventional`) {
-							const off = conventionalPreset(app.profiles(provider, config.id), "off")?.slug ?? "";
-							const low = conventionalPreset(app.profiles(provider, config.id), "low")?.slug ?? "";
-							const medium = conventionalPreset(app.profiles(provider, config.id), "medium")?.slug ?? "";
-							const xhigh = conventionalPreset(app.profiles(provider, config.id), "xhigh")?.slug ?? "";
-							if (!off || !low || !medium || !xhigh) {
-								return { kind: "error", message: "The four-preset layout needs off/low/medium/xhigh presets — map the levels manually." };
-							}
-							routing.levels = { off, minimal: low, low, medium, high: xhigh, xhigh, max: xhigh };
-							return { kind: "updated", message: "Four-preset layout mapped across all seven Pi levels — save to write." };
+							const conventional = conventionalLevels(app.profiles(provider, config.id), levelKinds);
+							if (!conventional.levels) return { kind: "error", message: conventional.error ?? "Map the levels manually." };
+							routing.levels = conventional.levels;
+							return { kind: "updated", message: "The presets are mapped to all seven Pi levels. Save to write the map." };
 						}
 						if (key === `routing:${config.id}:save`) {
 							const errors = analyzeExplicitProfileRouting(routing, app.profiles(provider, config.id)).errors;
@@ -1825,13 +2099,7 @@ export default async function (pi: ExtensionAPI) {
 				sourceName: provider.name,
 				purpose,
 				page,
-				models: configs.map((c) => ({
-					id: c.id,
-					flags: modelFlags(c, provider.modelOverrides?.[c.id]),
-					summary: modelDescription(c, provider),
-					presetCount: app.profiles(provider, c.id).length,
-					routingSummary: routingSummaryOf(provider, c.id),
-				})),
+				models: configs.map((config) => modelRow(provider, config, provider.serverType)),
 			});
 		}
 	}
@@ -1856,12 +2124,26 @@ export default async function (pi: ExtensionAPI) {
 				const ov = overridesOf(draft, c.id);
 				return {
 					id: c.id,
-					flags: modelFlags(c, ov),
+					flags: addFlags(c),
 					summary: `ctx ${fmt(ov?.contextWindow ?? c.contextWindow ?? draft.defaultContextWindow ?? null)} · max ${fmt(ov?.maxTokens ?? c.maxTokens ?? draft.defaultMaxTokens ?? null)}`,
 					unreported: (ov?.contextWindow ?? c.contextWindow) === null || (ov?.maxTokens ?? c.maxTokens) === null,
 				};
 			});
 		const perModel = new Map<string, ModelOverride>();
+
+		/** The flags of a probed model, with the draft values of this screen. */
+		function addFlags(config: ModelConfig): string {
+			const resolved = resolveFor(
+				{
+					defaultContextWindow: draft.defaultContextWindow ?? undefined,
+					defaultMaxTokens: draft.defaultMaxTokens ?? undefined,
+					modelOverrides: Object.fromEntries(perModel),
+				},
+				config,
+				live?.serverType,
+			);
+			return `${modelFlags(resolved)}${hiddenTag({ hiddenKind: resolved.hidden ? resolved.kind : undefined })}`;
+		}
 
 		function overridesOf(_d: typeof draft, id: string): ModelOverride | undefined {
 			return perModel.get(id);
@@ -1997,7 +2279,7 @@ export default async function (pi: ExtensionAPI) {
 							draftName: draft.name || suggested(),
 							model: {
 								id,
-								flags: modelFlags(config, ov),
+								flags: addFlags(config),
 								serverContextWindow: config.contextWindow ?? null,
 								serverMaxTokens: config.maxTokens ?? null,
 								contextWindow: ov.contextWindow ?? config.contextWindow ?? draft.defaultContextWindow ?? null,
@@ -2160,7 +2442,7 @@ export default async function (pi: ExtensionAPI) {
 				continue;
 			}
 			if (action === "doctor") {
-				await showReport(ctx, "Model Discovery diagnostics", buildDiagnosticsLines(app.listSources()).join("\n"));
+				await showReport(ctx, "Model Discovery diagnostics", diagnosticsLines().join("\n"));
 				continue;
 			}
 			if (action === "status") {
@@ -2228,7 +2510,7 @@ export default async function (pi: ExtensionAPI) {
 					await showReport(ctx, "Model Discovery status", formatDiscoveryStatus(app.listSources()));
 					return;
 				case "doctor": {
-					const lines = buildDiagnosticsLines(app.listSources());
+					const lines = diagnosticsLines();
 					lines.push(
 						"",
 						"Actions",
@@ -2405,29 +2687,64 @@ export default async function (pi: ExtensionAPI) {
 						return;
 					}
 					const prefetched = cachedCatalog(provider) ?? { models: [], serverType: provider.serverType ?? "OpenAI-compatible" };
-					const ov = provider.modelOverrides?.[intent.modelId] ?? {};
-					const writeOverride = async (patch: ModelOverride, feedback: string) => {
-						provider.modelOverrides = { ...provider.modelOverrides, [intent.modelId]: { ...ov, ...patch } };
+					const writeOverride = async (patch: Parameters<typeof patchModelOverride>[2], feedback: string) => {
+						patchModelOverride(provider, intent.modelId, patch);
 						app.saveSource(provider);
 						await persistModelOverrideRegister(ctx, provider, prefetched, `${feedback} for "${intent.modelId}"`);
 					};
-					if (intent.field === "vision") {
-						const effInput = ov.input ?? ["text"];
-						const wantImage = intent.value === "on";
-						const nextInput = wantImage ? [...new Set([...effInput, "image"])] : effInput.filter((i) => i !== "image");
-						await writeOverride({ input: nextInput }, `Vision ${wantImage ? "enabled" : "disabled"}`);
+					if (intent.field === "contextWindow" || intent.field === "maxTokens") {
+						const n = positiveInt(intent.value);
+						if (n === null) {
+							emitText(ctx, "Value must be a positive whole number.", "error");
+							return;
+						}
+						await writeOverride(
+							{ [intent.field]: n },
+							`${intent.field === "maxTokens" ? "Max output tokens" : "Context window"} set to ${fmt(n)}`,
+						);
 						return;
 					}
-					if (intent.field === "reasoning") {
-						await writeOverride({ reasoning: intent.value === "on" }, `Reasoning ${intent.value === "on" ? "enabled" : "disabled"}`);
+					const config = cachedModelConfig(provider, intent.modelId);
+					const result = modelSettingPatch(intent.field, intent.value, {
+						familyIds: familyRegistry.families.map((family) => family.id),
+						kind: config ? resolveFor(provider, config, provider.serverType).kind : "chat",
+					});
+					if ("error" in result) {
+						emitText(ctx, result.error, "error");
 						return;
 					}
-					const n = positiveInt(intent.value);
-					if (n === null) {
-						emitText(ctx, "Value must be a positive whole number.", "error");
+					await writeOverride(result.patch, MODEL_SETTING_LABELS[intent.field](intent.value));
+					return;
+				}
+				case "families-update":
+					await runFamiliesUpdate(ctx);
+					return;
+				case "preset-defaults": {
+					const provider = app.findSource(intent.source);
+					if (!provider) {
+						emitText(ctx, `Unknown source: ${intent.source}`, "error");
 						return;
 					}
-					await writeOverride(intent.field === "maxTokens" ? { maxTokens: n } : { contextWindow: n }, `${intent.field === "maxTokens" ? "Max output tokens" : "Context window"} set to ${fmt(n)}`);
+					const config = cachedModelConfig(provider, intent.modelId);
+					if (!config) {
+						emitText(ctx, `Unknown model "${intent.modelId}" on source "${provider.name}".`, "error");
+						return;
+					}
+					const replaces = presetDefaultsOf(provider, config, provider.serverType)?.panel.replaces ?? [];
+					if (replaces.length && !intent.confirmed) {
+						const names = replaces.map((slug) => `"${slug}"`).join(", ");
+						if (ctx.mode !== "tui") {
+							emitText(ctx, `Refusing to replace the stored preset(s) ${names} on "${intent.modelId}" without --yes.`, "error");
+							return;
+						}
+						if (!(await ctx.ui.confirm("Replace presets", `Replace the stored preset(s) ${names} on "${intent.modelId}"?`))) return;
+					}
+					await applyPresetDefaults(
+						ctx,
+						provider,
+						config,
+						cachedCatalog(provider) ?? { models: [], serverType: provider.serverType ?? "OpenAI-compatible" },
+					);
 					return;
 				}
 				case "preset-set": {
@@ -2526,7 +2843,10 @@ export default async function (pi: ExtensionAPI) {
 					const existing = app.profileRouting(provider, intent.modelId);
 					const routing: ModelProfileRouting = existing
 						? { ...existing, levels: { ...existing.levels, [intent.level]: intent.slug } }
-						: { ...defaultProfileRouting(profiles), levels: { ...defaultProfileRouting(profiles).levels, [intent.level]: intent.slug } };
+						: (() => {
+								const fresh = defaultProfileRouting(profiles, levelKindsOf(provider, intent.modelId));
+								return { ...fresh, levels: { ...fresh.levels, [intent.level]: intent.slug } };
+							})();
 					const errors = analyzeExplicitProfileRouting(routing, profiles).errors;
 					if (errors.length) {
 						emitText(ctx, errors[0] ?? "Invalid mapping.", "error");
@@ -2549,18 +2869,16 @@ export default async function (pi: ExtensionAPI) {
 						return;
 					}
 					const profiles = app.profiles(provider, intent.modelId);
-					const off = conventionalPreset(profiles, "off")?.slug ?? "";
-					const low = conventionalPreset(profiles, "low")?.slug ?? "";
-					const medium = conventionalPreset(profiles, "medium")?.slug ?? "";
-					const xhigh = conventionalPreset(profiles, "xhigh")?.slug ?? "";
-					if (!off || !low || !medium || !xhigh) {
-						emitText(ctx, "The four-preset layout needs off/low/medium/xhigh presets — map the levels manually via /discover routing set.", "error");
+					const levelKinds = levelKindsOf(provider, intent.modelId);
+					const conventional = conventionalLevels(profiles, levelKinds);
+					if (!conventional.levels) {
+						emitText(ctx, `${conventional.error} Use /discover routing set.`, "error");
 						return;
 					}
 					const existing = app.profileRouting(provider, intent.modelId);
 					const routing: ModelProfileRouting = existing
-						? { ...existing, levels: { ...existing.levels, off, minimal: low, low, medium, high: xhigh, xhigh, max: xhigh } }
-						: { ...defaultProfileRouting(profiles), levels: { off, minimal: low, low, medium, high: xhigh, xhigh, max: xhigh } };
+						? { ...existing, levels: conventional.levels }
+						: { ...defaultProfileRouting(profiles, levelKinds), levels: conventional.levels };
 					const errors = analyzeExplicitProfileRouting(routing, profiles).errors;
 					if (errors.length) {
 						emitText(ctx, errors[0] ?? "Invalid mapping.", "error");
@@ -2572,7 +2890,10 @@ export default async function (pi: ExtensionAPI) {
 					if (registered) {
 						await refreshAdaptiveSelection(ctx, provider, intent.modelId);
 						updateThinkingProfileStatus(ctx);
-						emitText(ctx, `Four-preset layout mapped on "${intent.modelId}": off=${off}, low/medium=${low}/${medium}, high/xhigh/max=${xhigh}.`);
+						emitText(
+							ctx,
+							`Presets mapped by kind on "${intent.modelId}": ${THINKING_LEVELS.map((level) => `${level}=${routing.levels[level]}`).join(", ")}.`,
+						);
 					}
 					return;
 				}
@@ -2657,14 +2978,15 @@ export default async function (pi: ExtensionAPI) {
 
 			const { provider, models: configs, serverType, profileCount } = result;
 			try {
-				const lines = configs.map(
-					(c) =>
-						`- ${c.id}${modelFlags(c, provider.modelOverrides?.[c.id])}: ${modelDescription(c, provider)}`,
+				const resolved = configs.map((config) => resolveFor(provider, config, serverType));
+				const lines = resolved.map((model) => `- ${model.config.id}${modelFlags(model)}: ${modelDescription(model, provider)}`);
+				const missing = resolved.filter(
+					(model) => model.contextWindowSource !== "server" && model.contextWindowSource !== "your setting"
+						|| (model.maxTokensSource !== "server" && model.maxTokensSource !== "your setting"),
 				);
-				const missing = configs.filter((c) => c.contextWindow === null || c.maxTokens === null);
 				const note =
 					missing.length > 0
-						? `\n\n${missing.length} model(s) had unreported values (defaults applied: ctx ${fmt(provider.defaultContextWindow ?? 128000)}, max ${fmt(provider.defaultMaxTokens ?? 16384)}). The user can fine-tune them via /discover.`
+						? `\n\n${missing.length} model(s) had unreported values. A fallback value is in use for each one. The user can fine-tune them via /discover.`
 						: "";
 
 				return {

@@ -126,6 +126,7 @@ test("the inventory covers the whole DiscoveryApplication surface", () => {
 	// Frozen snapshot: adding an application method without registering it in
 	// the inventory fails here, which is the point (drift becomes loud).
 	const snapshot = [
+		"applyFamilyDefaults",
 		"findSource",
 		"listSources",
 		"profileRouting",

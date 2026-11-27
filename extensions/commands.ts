@@ -13,7 +13,15 @@ export type DiscoveryIntent =
 	| { kind: "source-auth"; name: string; keyFromEnv?: string }
 	| { kind: "source-defaults"; name: string; contextWindow?: number; maxTokens?: number }
 	| { kind: "source-rescan"; name: string }
-	| { kind: "model-set"; modelId: string; field: "vision" | "reasoning" | "contextWindow" | "maxTokens"; value: string; source?: string }
+	| { kind: "families-update" }
+	| {
+			kind: "model-set";
+			modelId: string;
+			field: "vision" | "reasoning" | "contextWindow" | "maxTokens" | "defaults" | "family" | "hidden";
+			value: string;
+			source?: string;
+	  }
+	| { kind: "preset-defaults"; source: string; modelId: string; confirmed: boolean }
 	| { kind: "preset-set"; source: string; modelId: string; slug: string; field: string; value: string }
 	| { kind: "preset-remove"; source: string; modelId: string; slug: string; confirmed: boolean }
 	| { kind: "routing-set"; source: string; modelId: string; level: string; slug: string }
@@ -27,6 +35,7 @@ export const DISCOVER_USAGE = [
 	"/discover status                   show source and catalogue health",
 	"/discover doctor                   show actionable diagnostics",
 	"/discover rescan-all              refetch + re-register every source",
+	"/discover families update          get new model family data and register every source again",
 	"/discover paths                    show the configuration path",
 	"/discover help                     show this help",
 	"",
@@ -43,13 +52,17 @@ export const DISCOVER_USAGE = [
 	"/discover source remove <name> --yes    remove non-interactively",
 	"",
 	"models (add --source <name> when the id exists on several sources)",
-	"/discover model <id> vision on|off             toggle image input",
-	"/discover model <id> reasoning on|off          toggle reasoning",
+	"/discover model <id> vision on|off|auto        set image input (auto = the server or family value)",
+	"/discover model <id> reasoning on|off|auto     set reasoning (auto = the server or family value)",
 	"/discover model <id> ctx <n> | max <n>        override context window / max output",
+	"/discover model <id> defaults on|off           send the recommended defaults on the base model",
+	"/discover model <id> family <family>|auto|none  set the model family",
+	"/discover model <id> hidden on|off             hide the model from /model",
 	"",
 	"presets and adaptive routing",
 	"/discover preset set <source> <modelId> <slug> <field> <value>",
 	"/discover preset remove <source> <modelId> <slug> [--yes]",
+	"/discover preset defaults <source> <modelId> [--yes]   copy the recommended presets into the config",
 	"/discover routing set <source> <modelId> <level> <slug>",
 	"/discover routing remove <source> <modelId> [--yes]",
 ].join("\n");
@@ -75,6 +88,7 @@ export function parseDiscoverArgs(args?: string): DiscoveryIntent {
 	if (raw === "status" || raw === "source list") return { kind: "status" };
 	if (raw === "doctor") return { kind: "doctor" };
 	if (raw === "rescan-all" || raw === "rescan all") return { kind: "rescan-all" };
+	if (raw === "families update") return { kind: "families-update" };
 	if (raw === "paths") return { kind: "paths" };
 	if (raw === "help") return { kind: "help" };
 	if (raw === "source add") return { kind: "add" };
@@ -149,11 +163,23 @@ export function parseDiscoverArgs(args?: string): DiscoveryIntent {
 		const tokens = raw.slice("model ".length).trim().split(/\s+/);
 		const modelId = tokens.shift();
 		const sub = tokens.shift();
-		if (!modelId || !sub) return { kind: "invalid", message: "Usage: /discover model <id> vision|reasoning on|off | ctx|max <n> [--source <name>]" };
+		if (!modelId || !sub) {
+			return {
+				kind: "invalid",
+				message: "Usage: /discover model <id> vision|reasoning on|off|auto | defaults|hidden on|off | family <family>|auto|none | ctx|max <n> [--source <name>]",
+			};
+		}
 		const source = flagValue(tokens, "--source");
-		if (sub === "vision" || sub === "reasoning") {
-			const value = tokens.find((t) => t === "on" || t === "off");
-			if (!value) return { kind: "invalid", message: `Usage: /discover model <id> ${sub} on|off` };
+		if (sub === "family") {
+			const value = tokens.find((t, index) => !t.startsWith("--") && tokens[index - 1] !== "--source");
+			if (!value) return { kind: "invalid", message: "Usage: /discover model <id> family <family>|auto|none" };
+			return { kind: "model-set", modelId, field: "family", value, source };
+		}
+		if (sub === "vision" || sub === "reasoning" || sub === "defaults" || sub === "hidden") {
+			// `auto` deletes the stored value of vision or reasoning.
+			const choices = sub === "vision" || sub === "reasoning" ? ["on", "off", "auto"] : ["on", "off"];
+			const value = tokens.find((t) => choices.includes(t));
+			if (!value) return { kind: "invalid", message: `Usage: /discover model <id> ${sub} ${choices.join("|")}` };
 			return { kind: "model-set", modelId, field: sub, value, source };
 		}
 		if (sub === "ctx" || sub === "max") {
@@ -171,6 +197,16 @@ export function parseDiscoverArgs(args?: string): DiscoveryIntent {
 		const value = valueTokens.join(" ");
 		if (!source || !modelId || !slug || !field || value === "") return { kind: "invalid", message: "Usage: /discover preset set <source> <modelId> <slug> <field> <value>" };
 		return { kind: "preset-set", source, modelId, slug, field, value };
+	}
+	if (raw.startsWith("preset defaults ")) {
+		let rest = raw.slice("preset defaults ".length).trim();
+		const confirmed = rest.endsWith(" --yes");
+		if (confirmed) rest = rest.slice(0, -" --yes".length).trim();
+		const tokens = rest.split(/\s+/);
+		if (tokens.length !== 2 || !tokens[0]) {
+			return { kind: "invalid", message: "Usage: /discover preset defaults <source> <modelId> [--yes]" };
+		}
+		return { kind: "preset-defaults", source: tokens[0], modelId: tokens[1], confirmed };
 	}
 	if (raw.startsWith("preset remove ")) {
 		let rest = raw.slice("preset remove ".length).trim();
@@ -207,6 +243,7 @@ export function completeDiscoverArgs(prefix: string, sourceNames: readonly strin
 		"status",
 		"doctor",
 		"rescan-all",
+		"families update",
 		"paths",
 		"help",
 		"source list",
@@ -220,6 +257,7 @@ export function completeDiscoverArgs(prefix: string, sourceNames: readonly strin
 		"model ",
 		"preset set ",
 		"preset remove ",
+		"preset defaults ",
 		"routing set ",
 		"routing conventional ",
 		"routing remove ",
@@ -233,6 +271,7 @@ export function completeDiscoverArgs(prefix: string, sourceNames: readonly strin
 		...sourceNames.map((name) => `source rescan ${name}`),
 		...sourceNames.map((name) => `preset set ${name} `),
 		...sourceNames.map((name) => `preset remove ${name} `),
+		...sourceNames.map((name) => `preset defaults ${name} `),
 		...sourceNames.map((name) => `routing set ${name} `),
 		...sourceNames.map((name) => `routing conventional ${name} `),
 		...sourceNames.map((name) => `routing remove ${name} `),

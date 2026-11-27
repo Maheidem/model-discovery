@@ -60,6 +60,8 @@ export const DISCOVER_ACTIONS: readonly DiscoverAction[] = [
 	{ key: "status", verb: "status", appMethod: "listSources" },
 	{ key: "doctor", verb: "doctor", appMethod: "listSources" },
 	{ key: "rescan-all", verb: "rescan-all", appMethod: "saveSource" },
+	// The update reads the network and registers each source again. It changes no config.
+	{ key: "families-update", verb: "families update", appMethod: "listSources" },
 	{ key: "configure-advanced", verb: "", appMethod: "listSources" },
 	{ key: "cfg:source:<name>:advanced", verb: "source open <name>", appMethod: "findSource" },
 	{ key: "paths", verb: "paths", appMethod: "" },
@@ -75,15 +77,20 @@ export const DISCOVER_ACTIONS: readonly DiscoverAction[] = [
 	{ key: "source:<name>:rescan", verb: "source rescan <name>", appMethod: "saveSource" },
 
 	// --- Per-model overrides (index.ts:1328/1369/1616 mutation paths) ---
-	{ key: "model:<id>:vision", verb: "model <id> vision on", appMethod: "saveSource" },
+	{ key: "model:<id>:vision", verb: "model <id> vision auto", appMethod: "saveSource" },
 	{ key: "model:<id>:contextWindow", verb: "model <id> ctx <n>", appMethod: "saveSource" },
 	{ key: "model:<id>:maxTokens", verb: "model <id> max <n>", appMethod: "saveSource" },
+	{ key: "model:<id>:reasoning", verb: "model <id> reasoning auto", appMethod: "saveSource" },
+	{ key: "model:<id>:defaults", verb: "model <id> defaults off", appMethod: "saveSource" },
+	{ key: "model:<id>:family", verb: "model <id> family auto", appMethod: "saveSource" },
+	{ key: "model:<id>:hidden", verb: "model <id> hidden on", appMethod: "saveSource" },
 
 	// --- Presets CRUD (index.ts:1103/1243/1262) ---
 	{ key: "presets", verb: "", appMethod: "profiles" },
 	{ key: "preset:<modelId>:<slug>", verb: "", appMethod: "saveProfile" },
 	{ key: "preset:<modelId>:<slug>:<field>", verb: "preset set <name> <modelId> <slug> <field> <n>", appMethod: "saveProfile" },
 	{ key: "preset:<modelId>:<slug>:remove", verb: "preset remove <name> <modelId> <slug> --yes", appMethod: "removeProfile" },
+	{ key: "preset:<modelId>:defaults", verb: "preset defaults <name> <modelId> --yes", appMethod: "applyFamilyDefaults" },
 
 	// --- Adaptive routing (index.ts:994/1164/1165) ---
 	{ key: "routing", verb: "", appMethod: "profileRouting" },
@@ -103,6 +110,7 @@ export const IMPLEMENTED_PANEL_KEYS: readonly string[] = [
 	"status",
 	"doctor",
 	"rescan-all",
+	"families-update",
 	"configure-advanced",
 	"cfg:source:<name>:advanced",
 	"paths",
@@ -119,6 +127,11 @@ export const IMPLEMENTED_PANEL_KEYS: readonly string[] = [
 	"model:<id>:vision",
 	"model:<id>:contextWindow",
 	"model:<id>:maxTokens",
+	"model:<id>:reasoning",
+	"model:<id>:defaults",
+	"model:<id>:family",
+	"model:<id>:hidden",
+	"preset:<modelId>:defaults",
 	"preset:<modelId>:<slug>",
 	"preset:<modelId>:<slug>:<field>",
 	"preset:<modelId>:<slug>:remove",

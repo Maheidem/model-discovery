@@ -15,6 +15,12 @@ export interface ModelOverride {
 	maxTokens?: number;
 	reasoning?: boolean;
 	input?: string[];
+	/** A family id, or `"none"`. Not set = find the family from the model name. */
+	family?: string;
+	/** `false` = the base model does not send the recommended defaults. */
+	familyDefaults?: boolean;
+	/** `true` = do not register the model. `false` = register a model that is not a chat model. */
+	hidden?: boolean;
 }
 
 export interface DiscoveredProvider {

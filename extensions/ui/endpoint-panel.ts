@@ -29,7 +29,10 @@
  *   `source:<name>:remove`              arm    → removeSource
  *   `model:<id>`                        open model detail (also the picker key)
  *   `model:<id>:contextWindow|maxTokens`  input  → saveSource override
- *   `model:<id>:reasoning|vision`      toggle → saveSource override
+ *   `model:<id>:reasoning|vision`      cycle on → off → auto → saveSource override
+ *   `model:<id>:defaults|hidden`       toggle → saveSource override
+ *   `model:<id>:family`                cycle  → saveSource override
+ *   `preset:<modelId>:defaults`        copy the recommended presets (arm when it replaces a preset)
  *   `model:<id>:clear`                 arm     → drop the overrides of <id>
  *   `model:<id>:presets`               preset list for <id>
  *   `preset:<modelId>:<slug>`          preset editor — storage reality is
@@ -46,6 +49,7 @@
  */
 
 import { formatAge } from "./home.ts";
+import { KNOWN_REASONING_EFFORTS } from "../profiles.ts";
 import { BACK_KEY, pageRows, padToFrame, type PanelRow, type PanelShortcut, type PanelSnapshot, type PanelValueStyle, type RowPage } from "@maheidem/pi-panel-kit";
 
 /** Fixed frame height — source detail. */
@@ -154,7 +158,7 @@ export interface ModelPickerInput {
 	version: string;
 	sourceName: string;
 	purpose: string;
-	models: readonly { id: string; flags: string; summary: string; presetCount: number; routingSummary: string }[];
+	models: readonly { id: string; flags: string; summary: string; presetCount: number; routingSummary: string; hiddenKind?: string }[];
 	page?: number;
 }
 
@@ -162,9 +166,9 @@ export function buildModelPickerSnapshot(input: ModelPickerInput): BuiltPanel {
 	const actions: PanelRow[] = [{ key: BACK_KEY, label: "Back to sources", value: "esc", kind: "action", valueStyle: "muted" }];
 	const chrome = 1 + 2 + 2 + actions.length + 1 + 1 + 1 + 1;
 	const window: RowPage = pageRows(
-		input.models.map((model): PanelRow => ({
+		orderHiddenLast(input.models).map((model): PanelRow => ({
 			key: `model:${model.id}`,
-			label: `${model.id}${model.flags}`,
+			label: `${model.id}${model.flags}${hiddenTag(model)}`,
 			value: `${model.summary} · ${model.presetCount} preset(s) · ${model.routingSummary} ›`,
 			kind: "action",
 			valueStyle: "muted",
@@ -220,6 +224,18 @@ export interface EndpointPanelModel {
 	flags: string;
 	summary: string;
 	presetCount: number;
+	/** The model kind of a hidden model, for example "embedding". Not set = the model is registered. */
+	hiddenKind?: string;
+}
+
+/** Registered models first, then hidden models. The order in each group does not change. */
+export function orderHiddenLast<T extends { hiddenKind?: string }>(models: readonly T[]): T[] {
+	return [...models.filter((model) => !model.hiddenKind), ...models.filter((model) => model.hiddenKind)];
+}
+
+/** The tag of a hidden model, for example ` · hidden (embedding)`. */
+export function hiddenTag(model: { hiddenKind?: string }): string {
+	return model.hiddenKind ? ` · hidden (${model.hiddenKind})` : "";
 }
 
 export interface EndpointPanelInput {
@@ -300,9 +316,9 @@ export function buildEndpointSnapshot(input: EndpointPanelInput): BuiltPanel {
 	];
 	const chrome = 1 + summaryLines.length + 2 + actions.length + detailLines.length + 1 + (shortcuts.length ? 1 : 0) + 1 + 1;
 	const window: RowPage = pageRows(
-		input.models.map((model): PanelRow => ({
+		orderHiddenLast(input.models).map((model): PanelRow => ({
 			key: `model:${model.id}`,
-			label: `${model.id}${model.flags}`,
+			label: `${model.id}${model.flags}${hiddenTag(model)}`,
 			value: `${model.summary}${model.presetCount ? ` · ${model.presetCount} preset(s)` : ""} ›`,
 			kind: "action",
 			valueStyle: "muted",
@@ -334,17 +350,68 @@ export function buildEndpointSnapshot(input: EndpointPanelInput): BuiltPanel {
 // model panel
 // ---------------------------------------------------------------------------
 
+/** The thinking controls of a model, as the model panel shows them. */
+export interface ModelPanelThinking {
+	toggle: boolean;
+	efforts: readonly string[];
+	preserveThinking: boolean;
+	source: string;
+}
+
+/**
+ * One line for the thinking controls of a model. Examples:
+ * `switch + efforts low, medium, xhigh · preserve · from server`,
+ * `switch only · from family`, `efforts none…max · from server`, `none`.
+ */
+export function describeThinkingProfile(thinking: ModelPanelThinking | undefined): string {
+	if (!thinking) return "none";
+	const efforts =
+		thinking.efforts.length > 4
+			? `efforts ${thinking.efforts[0]}…${thinking.efforts[thinking.efforts.length - 1]}`
+			: `efforts ${thinking.efforts.join(", ")}`;
+	const controls = thinking.efforts.length === 0 ? "switch only" : thinking.toggle ? `switch + ${efforts}` : efforts;
+	return `${controls}${thinking.preserveThinking ? " · preserve" : ""} · from ${thinking.source}`;
+}
+
+export type ModelTriState = "on" | "off" | "auto";
+export const MODEL_TRI_STATE_CHOICES: readonly ModelTriState[] = ["on", "off", "auto"];
+
+/** The effective settings of one model. The host takes each value from `resolveModel()`. */
 export interface ModelPanelModel {
 	id: string;
 	flags: string;
 	serverContextWindow: number | null;
 	serverMaxTokens: number | null;
-	serverReasoning: boolean | null;
-	serverInput: readonly string[];
-	effectiveContextWindow: number | null;
-	effectiveMaxTokens: number | null;
-	effectiveReasoning: boolean | null;
-	effectiveInput: readonly string[];
+	contextWindow: number;
+	contextWindowSource: string;
+	maxTokens: number;
+	maxTokensSource: string;
+	reasoning: boolean;
+	reasoningSource: string;
+	/** The stored reasoning setting: `on`, `off`, or `auto` (no stored value). */
+	reasoningSetting: ModelTriState;
+	vision: boolean;
+	visionSource: string;
+	/** The stored vision setting: `on`, `off`, or `auto` (no stored value). */
+	visionSetting: ModelTriState;
+	/** The label of the family. Not set = the model has no family. */
+	familyLabel?: string;
+	familySource: "your setting" | "name" | "none";
+	/** The stored family setting: `auto`, a family id, or `none`. */
+	familySetting: string;
+	/** All family ids, in match order. */
+	familyChoices: readonly string[];
+	thinking?: ModelPanelThinking;
+	/** Information from the family. The extension does not use it. */
+	audio?: boolean;
+	tools?: boolean;
+	/** The base model sends the recommended defaults. */
+	defaultsOn: boolean;
+	/** The model has recommended defaults (it has a thinking control). */
+	hasDefaults: boolean;
+	/** The model is not registered with pi. */
+	hidden: boolean;
+	kind: string;
 	reportSource: string;
 	presetCount: number;
 	routingSummary: string;
@@ -358,40 +425,77 @@ export interface ModelPanelInput {
 	armed?: readonly string[];
 }
 
-/** `effective · server reported` on one line, so an override never looks ineffective. */
+/** The family of a model: `Qwen 3.8 (name)`, `Qwen 3.8 (your setting)` or `none`. */
+export function describeModelFamily(model: Pick<ModelPanelModel, "familyLabel" | "familySource" | "familySetting">): string {
+	if (!model.familyLabel) return model.familySetting === "none" ? "none (your setting)" : "none";
+	return `${model.familyLabel} (${model.familySource === "your setting" ? "your setting" : "name"})`;
+}
+
+/** Each row shows the value in use and where the value comes from. */
 export function modelOverrideRows(model: ModelPanelModel): PanelRow[] {
-	const vision = model.effectiveInput.includes("image");
+	const defaultsLabel = model.familyLabel ?? "server profile";
 	return [
 		{
 			key: `model:${model.id}:contextWindow`,
 			label: "Context window",
-			value: `${num(model.effectiveContextWindow)} · server ${num(model.serverContextWindow)}`,
-			rawValue: model.effectiveContextWindow === null ? "" : String(model.effectiveContextWindow),
+			value: `${num(model.contextWindow)} (${model.contextWindowSource}) · server ${num(model.serverContextWindow)}`,
+			rawValue: String(model.contextWindow),
 			kind: "input",
 			inputHint: `Override the context window of model "${model.id}" · whole number > 0 · Esc cancels`,
 		},
 		{
 			key: `model:${model.id}:maxTokens`,
 			label: "Max output tokens",
-			value: `${num(model.effectiveMaxTokens)} · server ${num(model.serverMaxTokens)}`,
-			rawValue: model.effectiveMaxTokens === null ? "" : String(model.effectiveMaxTokens),
+			value: `${num(model.maxTokens)} (${model.maxTokensSource}) · server ${num(model.serverMaxTokens)}`,
+			rawValue: String(model.maxTokens),
 			kind: "input",
 			inputHint: `Override the max output of model "${model.id}" · whole number > 0 · Esc cancels`,
 		},
 		{
 			key: `model:${model.id}:reasoning`,
 			label: "Reasoning",
-			value: `${model.effectiveReasoning === null ? "unknown (server silent)" : model.effectiveReasoning ? "on" : "off"} · server ${
-				model.serverReasoning === null ? "?" : model.serverReasoning ? "on" : "off"
-			}`,
-			rawValue: String(model.effectiveReasoning ?? false),
-			kind: "toggle",
+			value: `${model.reasoning ? "on" : "off"} (${model.reasoningSource})`,
+			rawValue: model.reasoningSetting,
+			choices: [...MODEL_TRI_STATE_CHOICES],
+			kind: "cycle",
 		},
 		{
 			key: `model:${model.id}:vision`,
 			label: "Vision (image input)",
-			value: `${vision ? "on" : "off"} · server ${model.serverInput.includes("image") ? "on" : "off"}`,
-			rawValue: String(vision),
+			value: `${model.vision ? "yes" : "no"} (${model.visionSource})`,
+			rawValue: model.visionSetting,
+			choices: [...MODEL_TRI_STATE_CHOICES],
+			kind: "cycle",
+		},
+		model.hasDefaults
+			? {
+					key: `model:${model.id}:defaults`,
+					label: "Recommended defaults",
+					value: model.defaultsOn ? `on · ${defaultsLabel}` : "off · the base model sends the switch only",
+					rawValue: String(model.defaultsOn),
+					kind: "toggle",
+				}
+			: {
+					key: `model:${model.id}:defaults`,
+					label: "Recommended defaults",
+					value: "not available · this model has no thinking control",
+					valueStyle: "muted",
+					kind: "info",
+					disabled: true,
+				},
+		{
+			key: `model:${model.id}:family`,
+			label: "Family",
+			value: describeModelFamily(model),
+			rawValue: model.familySetting,
+			choices: ["auto", ...model.familyChoices, "none"],
+			kind: "cycle",
+		},
+		{
+			key: `model:${model.id}:hidden`,
+			label: "Hidden from /model",
+			value: `${model.hidden ? "yes" : "no"} · kind ${model.kind}`,
+			rawValue: String(model.hidden),
 			kind: "toggle",
 		},
 	];
@@ -408,31 +512,32 @@ export function buildModelSnapshot(input: ModelPanelInput): BuiltPanel {
 		{ key: clearKey, label: "Clear overrides", ...armCell(clearKey, `overrides on "${m.id}"`, armed), kind: "action" },
 		{ key: BACK_KEY, label: "Back to source", value: "esc", kind: "action", valueStyle: "muted" },
 	];
+	const information = [m.audio ? "[audio]" : "", m.tools ? "[tools]" : ""].filter(Boolean).join(" ");
 	const summaryLines = [
 		`Model Discovery v${input.version} · source ${input.sourceName}`,
-		`server reports: ctx ${num(m.serverContextWindow)} · max ${num(m.serverMaxTokens)} · reasoning ${
-			m.serverReasoning === null ? "unknown" : m.serverReasoning ? "on" : "off"
-		} · input ${m.serverInput.join("+") || "?"} · ${m.reportSource}`,
-		`effective: ctx ${num(m.effectiveContextWindow)} · max ${num(m.effectiveMaxTokens)} · input ${m.effectiveInput.join("+") || "text"}${
-			m.overridden ? " · overridden" : ""
-		}`,
+		`family: ${describeModelFamily(m)}${information ? ` ${information}` : ""}`,
+		`thinking: ${describeThinkingProfile(m.thinking)}`,
 	];
 	const shortcuts: PanelShortcut[] = [
 		{ key: "p", label: "presets", action: `model:${m.id}:presets` },
 		{ key: "v", label: "vision", action: `model:${m.id}:vision` },
 		{ key: "q", label: "back", action: BACK_KEY },
 	];
-	const chrome = 1 + summaryLines.length + 2 + overrides.length + actions.length + 2 + 1 + (shortcuts.length ? 1 : 0) + 1 + 1;
 	return {
 		snapshot: padToFrame(
 			{
 				title: `Model: ${m.id}${m.flags}`,
 				summaryLines,
 				sections: [
-					{ title: "Overrides", rows: overrides },
+					{ title: "Settings", rows: overrides },
 					{ title: "Actions", rows: actions },
 				],
-				detailLines: [`adaptive routing: ${m.routingSummary}`, "an override never hides the server value — both are printed"],
+				detailLines: [
+					`server reports: ctx ${num(m.serverContextWindow)} · max ${num(m.serverMaxTokens)} · ${m.reportSource}`,
+					m.hidden
+						? `this model is hidden: pi does not register it${m.overridden ? " · you changed a setting" : ""}`
+						: `each row shows the value in use and its source${m.overridden ? " · you changed a setting" : ""}`,
+				],
 				idleMessage: `edits save immediately for model "${m.id}"`,
 				shortcuts,
 			},
@@ -453,12 +558,48 @@ export interface PresetsPanelInput {
 	modelId: string;
 	presets: readonly { slug: string; summary: string }[];
 	routingSummary: string;
+	/** The recommended presets of the model. Not set = the model has no thinking control. */
+	defaults?: PresetsPanelDefaults;
+	armed?: readonly string[];
 	page?: number;
+}
+
+export interface PresetsPanelDefaults {
+	/** The family label, or "the server profile". */
+	label: string;
+	presetCount: number;
+	/** The adaptive alias that the copy turns on. */
+	aliasSlug: string;
+	/** Stored presets that the copy replaces. Not empty = the row needs two presses. */
+	replaces: readonly string[];
+}
+
+export function presetDefaultsKey(modelId: string): string {
+	return `preset:${modelId}:defaults`;
+}
+
+/** What the row "Customize recommended presets" does. */
+export function describePresetDefaults(defaults: PresetsPanelDefaults): string {
+	return `Copy the recommended presets of ${defaults.label} into your config and turn on the @${defaults.aliasSlug} alias. You can then edit them.`;
+}
+
+export function presetDefaultsRow(modelId: string, defaults: PresetsPanelDefaults | undefined, armed: readonly string[] = []): PanelRow {
+	const key = presetDefaultsKey(modelId);
+	const label = "Customize recommended presets";
+	if (!defaults) {
+		return { key, label, value: "not available · this model has no thinking control", valueStyle: "muted", kind: "info", disabled: true };
+	}
+	if (defaults.replaces.length) {
+		const names = defaults.replaces.map((slug) => `"${slug}"`).join(", ");
+		return { key, label, ...armCell(key, `replace ${names}`, armed), kind: "action" };
+	}
+	return { key, label, value: `copy ${defaults.presetCount} preset(s) of ${defaults.label} ›`, kind: "action" };
 }
 
 export function buildPresetsSnapshot(input: PresetsPanelInput): BuiltPanel {
 	const actions: PanelRow[] = [
 		{ key: `preset:${input.modelId}:add`, label: "Create preset", value: "new thinking/sampling bundle", kind: "action" },
+		presetDefaultsRow(input.modelId, input.defaults, input.armed),
 		{ key: `routing:${input.modelId}`, label: "Adaptive routing", value: `${input.routingSummary} ›`, kind: "action" },
 		{ key: BACK_KEY, label: "Back to model", value: "esc", kind: "action", valueStyle: "muted" },
 	];
@@ -491,7 +632,10 @@ export function buildPresetsSnapshot(input: PresetsPanelInput): BuiltPanel {
 					{ title: `Presets (${input.presets.length})`, rows: window.rows },
 					{ title: "Actions", rows: actions },
 				],
-				detailLines: [`routing: ${input.routingSummary}`, `page ${window.page + 1}/${window.pages}`],
+				detailLines: [
+					input.defaults ? describePresetDefaults(input.defaults) : `routing: ${input.routingSummary}`,
+					`page ${window.page + 1}/${window.pages}`,
+				],
 				idleMessage: "enter edits a preset · n creates · r routing",
 				shortcuts,
 			},
@@ -522,12 +666,31 @@ export const PRESET_FIELD_ORDER = [
 
 export type PresetField = (typeof PRESET_FIELD_ORDER)[number];
 
-/** The fixed vocabularies cycle; every other field is a free numeric input. */
+/**
+ * The fixed vocabularies cycle; every other field is a free numeric input.
+ * These are the choices of a model with no thinking profile.
+ */
 export const PRESET_CHOICES: Partial<Record<PresetField, string[]>> = {
 	enable_thinking: ["", "true", "false"],
 	preserve_thinking: ["", "true", "false"],
-	reasoning_effort: ["", "low", "medium", "xhigh"],
+	reasoning_effort: ["", ...KNOWN_REASONING_EFFORTS],
 };
+
+/**
+ * The choices of one field for one model. A stored value that the model does
+ * not accept stays in the list, so the user can see it and remove it.
+ */
+export function presetFieldChoices(
+	field: PresetField,
+	raw: string,
+	controls: Pick<PresetPanelInput, "effortChoices" | "hasToggle"> = {},
+): string[] | undefined {
+	let choices = PRESET_CHOICES[field];
+	if (field === "reasoning_effort" && controls.effortChoices) choices = ["", ...controls.effortChoices];
+	if (field === "enable_thinking" && controls.hasToggle === false) choices = [""];
+	if (!choices) return undefined;
+	return raw !== "" && !choices.includes(raw) ? [...choices, raw] : [...choices];
+}
 
 export interface PresetPanelInput {
 	version: string;
@@ -543,6 +706,10 @@ export interface PresetPanelInput {
 	/** Human-readable problems with the draft; empty means valid. */
 	issues: readonly string[];
 	isNew: boolean;
+	/** The efforts that the model accepts. Not set = the model has no thinking profile: all known efforts. */
+	effortChoices?: readonly string[];
+	/** `false` = the model has no `enable_thinking` switch. */
+	hasToggle?: boolean;
 	armed?: readonly string[];
 	page?: number;
 }
@@ -558,7 +725,19 @@ export function presetFieldKey(modelId: string, handle: string, field: PresetFie
 export function presetFieldRows(input: PresetPanelInput): PanelRow[] {
 	return PRESET_FIELD_ORDER.map((field): PanelRow => {
 		const raw = input.fields[field] ?? "";
-		const choices = PRESET_CHOICES[field];
+		const choices = presetFieldChoices(field, raw, input);
+		if (choices && choices.length === 1) {
+			// The model does not read this value, and the draft does not set it.
+			return {
+				key: presetFieldKey(input.modelId, input.handle, field),
+				label: field,
+				value: "not read by this model",
+				rawValue: "",
+				valueStyle: "muted",
+				kind: "info",
+				disabled: true,
+			};
+		}
 		return {
 			key: presetFieldKey(input.modelId, input.handle, field),
 			label: field,
@@ -651,6 +830,8 @@ export interface RoutingPanelInput {
 	/** Preset slugs a level may cycle through, in display order. */
 	choices: readonly string[];
 	issues: readonly string[];
+	/** The preset kinds that the conventional layout needs, for example off, low, medium, xhigh. */
+	conventionalKinds?: readonly string[];
 	armed?: readonly string[];
 	page?: number;
 }
@@ -689,7 +870,12 @@ export function buildRoutingSnapshot(input: RoutingPanelInput): BuiltPanel {
 			kind: "input",
 			inputHint: `Rename the adaptive alias of model "${input.modelId}" · Esc cancels`,
 		},
-		{ key: `routing:${input.modelId}:conventional`, label: "Map four-preset layout", value: "off/low/medium/xhigh → 7 levels", kind: "action" },
+		{
+			key: `routing:${input.modelId}:conventional`,
+			label: "Map presets by kind",
+			value: `${(input.conventionalKinds ?? ["off", "low", "medium", "xhigh"]).join("/")} → 7 levels`,
+			kind: "action",
+		},
 		{
 			key: saveKey,
 			label: "Save routing",

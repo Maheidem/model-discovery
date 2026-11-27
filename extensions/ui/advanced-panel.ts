@@ -2,7 +2,7 @@
  * Advanced configuration panel (pure builder).
  *
  * Home `Configure advanced…` lands here. It is deliberately maintenance-shaped:
- * global actions (re-scan everything, diagnostics, paths, verb cheat-sheet)
+ * global actions (re-scan everything, family data update, diagnostics, paths, verb cheat-sheet)
  * plus one entry per source into the endpoint panel, where the real config
  * fields live (`cfg:source:<name>:…`). This module never sees credentials —
  * the host passes `hasApiKey` only, same contract as the endpoint panel.
@@ -34,6 +34,7 @@ export interface AdvancedPanelInput {
 
 export const ADVANCED_MAINTENANCE_ROWS: PanelRow[] = [
 	{ key: "rescan-all", label: "Re-scan every source", value: "↻ refetch + re-register all", kind: "action" },
+	{ key: "families-update", label: "Update model family data", value: "↻ get new data + register all again", kind: "action" },
 	{ key: "doctor", label: "Diagnostics", value: "actionable health report ›", kind: "action" },
 	{ key: "paths", label: "Storage location", value: "show file path ›", kind: "action" },
 	{ key: "help-verbs", label: "Command reference", value: "every nested /discover verb ›", kind: "action" },
@@ -59,9 +60,9 @@ const ADVANCED_SHORTCUTS: PanelShortcut[] = [
 
 export function buildAdvancedSnapshot(input: AdvancedPanelInput): { snapshot: PanelSnapshot; page: number; pages: number } {
 	const backRow: PanelRow = { key: BACK_KEY, label: "Back to Model Discovery", value: "esc", kind: "action", valueStyle: "muted" };
-	// frameHeight grammar: 1 title + 3 summary + 2 section titles + 4 maintenance
-	// + (window ≤6 + back) + 2 detail + idle + shortcuts + navigation + border = 23.
-	const window = pageRows(advancedSourceRows(input.sources), 6, input.page ?? 0);
+	// frameHeight grammar: 1 title + 3 summary + 2 section titles + 5 maintenance
+	// + (window ≤5 + back) + 2 detail + idle + shortcuts + navigation + border = 23.
+	const window = pageRows(advancedSourceRows(input.sources), 5, input.page ?? 0);
 	const diagnostic = input.notes?.[0];
 	return {
 		snapshot: padToFrame(

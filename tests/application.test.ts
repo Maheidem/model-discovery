@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createDiscoveryApplication, type DiscoveryRepository } from "../extensions/application.ts";
+import {
+	createDiscoveryApplication,
+	modelSettingPatch,
+	patchModelOverride,
+	type DiscoveryRepository,
+} from "../extensions/application.ts";
 import type { ModelProfileRouting } from "../extensions/profiles.ts";
 import type { DiscoveredProvider } from "../extensions/storage.ts";
 
@@ -66,4 +71,77 @@ test("profile and routing actions persist through the same repository", () => {
 	state.app.removeProfile(provider, "model", "focused");
 	assert.equal(state.app.profileRouting(provider, "model"), undefined);
 	assert.deepEqual(state.app.profiles(provider, "model"), []);
+});
+
+const DEFAULT_LEVELS = { off: "instruct", minimal: "thinking", low: "thinking", medium: "thinking", high: "thinking", xhigh: "thinking", max: "thinking" };
+const DEFAULTS = {
+	presets: [
+		{ slug: "instruct", chatTemplateKwargs: { enable_thinking: false }, sampling: { temperature: 0.7 }, exposeAsModel: false },
+		{ slug: "thinking", chatTemplateKwargs: { enable_thinking: true }, sampling: { temperature: 1 }, exposeAsModel: false },
+	],
+	routing: { enabled: true, aliasSlug: "adaptive", levels: DEFAULT_LEVELS },
+};
+
+test("applyFamilyDefaults replaces a preset with the same name and keeps the other presets", () => {
+	const state = fixture();
+	const provider = state.app.findSource("local");
+	assert.ok(provider);
+	state.app.saveProfile(provider, "model", { slug: "mine", sampling: { temperature: 0.2 } });
+	state.app.saveProfile(provider, "model", { slug: "thinking", chatTemplateKwargs: { enable_thinking: true }, sampling: { temperature: 0.1 } });
+	state.app.applyFamilyDefaults(provider, "model", DEFAULTS);
+	const stored = state.providers()[0];
+	assert.deepEqual(stored.modelProfiles?.model.map((preset) => preset.slug), ["mine", "thinking", "instruct"]);
+	assert.equal(stored.modelProfiles?.model[1].sampling?.temperature, 1);
+	assert.equal(stored.modelProfiles?.model[0].sampling?.temperature, 0.2);
+	assert.deepEqual(stored.modelProfileRouting?.model, { enabled: true, aliasSlug: "adaptive", levels: DEFAULT_LEVELS });
+});
+
+test("applyFamilyDefaults keeps a stored alias name and turns the routing on", () => {
+	const state = fixture();
+	const provider = state.app.findSource("local");
+	assert.ok(provider);
+	state.app.saveProfile(provider, "model", { slug: "mine", sampling: { temperature: 0.2 } });
+	const levels = { off: "mine", minimal: "mine", low: "mine", medium: "mine", high: "mine", xhigh: "mine", max: "mine" };
+	state.app.saveRouting(provider, "model", { enabled: false, aliasSlug: "auto", levels });
+	state.app.applyFamilyDefaults(provider, "model", DEFAULTS);
+	assert.deepEqual(state.providers()[0].modelProfileRouting?.model, { enabled: true, aliasSlug: "auto", levels: DEFAULT_LEVELS });
+
+	// A stored alias with the name of a copied preset cannot stay: the two names collide.
+	state.app.saveRouting(provider, "model", { enabled: true, aliasSlug: "thinking", levels });
+	state.app.applyFamilyDefaults(provider, "model", DEFAULTS);
+	assert.equal(state.providers()[0].modelProfileRouting?.model.aliasSlug, "adaptive");
+});
+
+test("modelSettingPatch stores only a value that is different from the automatic value", () => {
+	const facts = { familyIds: ["qwen3.8", "gemma4"], kind: "chat" };
+	assert.deepEqual(modelSettingPatch("defaults", "off", facts), { patch: { familyDefaults: false } });
+	assert.deepEqual(modelSettingPatch("defaults", "on", facts), { patch: { familyDefaults: undefined } });
+	assert.deepEqual(modelSettingPatch("family", "gemma4", facts), { patch: { family: "gemma4" } });
+	assert.deepEqual(modelSettingPatch("family", "none", facts), { patch: { family: "none" } });
+	assert.deepEqual(modelSettingPatch("family", "auto", facts), { patch: { family: undefined } });
+	assert.match((modelSettingPatch("family", "nope", facts) as { error: string }).error, /Unknown family "nope".*qwen3\.8, gemma4, auto, none/);
+	assert.deepEqual(modelSettingPatch("hidden", "on", facts), { patch: { hidden: true } });
+	assert.deepEqual(modelSettingPatch("hidden", "off", facts), { patch: { hidden: undefined } });
+	assert.deepEqual(modelSettingPatch("hidden", "off", { ...facts, kind: "embedding" }), { patch: { hidden: false } });
+	assert.deepEqual(modelSettingPatch("hidden", "on", { ...facts, kind: "embedding" }), { patch: { hidden: undefined } });
+	assert.deepEqual(modelSettingPatch("reasoning", "off", facts), { patch: { reasoning: false } });
+	assert.deepEqual(modelSettingPatch("reasoning", "auto", facts), { patch: { reasoning: undefined } });
+	assert.deepEqual(modelSettingPatch("vision", "on", facts), { patch: { input: ["text", "image"] } });
+	assert.deepEqual(modelSettingPatch("vision", "off", facts), { patch: { input: ["text"] } });
+	assert.deepEqual(modelSettingPatch("vision", "auto", facts), { patch: { input: undefined } });
+	assert.ok("error" in modelSettingPatch("hidden", "auto", facts));
+});
+
+test("patchModelOverride deletes one key, keeps the other keys, and drops an empty object", () => {
+	const provider: DiscoveredProvider = {
+		name: "local",
+		baseUrl: "http://localhost:8080",
+		modelOverrides: { a: { reasoning: true, contextWindow: 4096, family: "qwen3.8" }, b: { maxTokens: 10 } },
+	};
+	patchModelOverride(provider, "a", { reasoning: undefined });
+	assert.deepEqual(provider.modelOverrides, { a: { contextWindow: 4096, family: "qwen3.8" }, b: { maxTokens: 10 } });
+	patchModelOverride(provider, "a", { contextWindow: undefined, family: undefined });
+	assert.deepEqual(provider.modelOverrides, { b: { maxTokens: 10 } });
+	patchModelOverride(provider, "b", { maxTokens: undefined });
+	assert.equal(provider.modelOverrides, undefined);
 });

@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { ADVANCED_MAINTENANCE_ROWS, ADVANCED_PANEL_ROWS, buildAdvancedSnapshot } from "../extensions/ui/advanced-panel.ts";
-import { BACK_KEY } from "@maheidem/pi-panel-kit";
+import { BACK_KEY, frameHeight } from "@maheidem/pi-panel-kit";
 import { modelDiscoveryVersion } from "../extensions/version.ts";
 
 const src = (name: string, i = 0) => ({
@@ -35,6 +35,8 @@ test("frame is fixed and mentions version, storage, and the secret policy", () =
 	assert.match(text, /~\/\.pi\/agent\/model-discovery\.json/);
 	assert.match(text, /--key-from-env/);
 	assert.equal(snap.sections[0].rows.length, ADVANCED_MAINTENANCE_ROWS.length);
+	assert.ok(ADVANCED_MAINTENANCE_ROWS.some((row) => row.key === "families-update"), "the family data update has a row");
+	assert.equal(frameHeight(built.snapshot), ADVANCED_PANEL_ROWS);
 	const keys = snap.sections[1].rows.map((r) => (r as { key: string }).key);
 	assert.ok(keys.includes(BACK_KEY) || snap.sections.some((s) => s.rows.some((r) => (r as { key: string }).key === BACK_KEY)));
 });

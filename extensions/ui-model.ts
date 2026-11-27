@@ -103,7 +103,12 @@ export function formatDiscoveryStatus(
 	return lines.join("\n");
 }
 
-export function buildDiagnosticsLines(providers: readonly DiscoveredProvider[]): string[] {
+/** `familyLines` is the text of `describeFamilyRegistry()` for the family data in use. */
+export function buildDiagnosticsLines(
+	providers: readonly DiscoveredProvider[],
+	familyLines: readonly string[] = [],
+): string[] {
+	const family = familyLines.length ? ["", "Model family data", ...familyLines.map((line) => `  ${line}`)] : [];
 	const summary = summarizeSources(providers);
 	const lines = [
 		`Configuration: ${homeRelativePath(STORAGE_PATH)}`,
@@ -113,7 +118,7 @@ export function buildDiagnosticsLines(providers: readonly DiscoveredProvider[]):
 	const diagnostic = getStorageDiagnostic();
 	if (diagnostic) lines.push(`Warning: ${diagnostic.message}`);
 	if (!providers.length) {
-		lines.push("", "No sources configured.");
+		lines.push("", "No sources configured.", ...family);
 		return lines;
 	}
 	lines.push("", "Configured sources");
@@ -126,5 +131,6 @@ export function buildDiagnosticsLines(providers: readonly DiscoveredProvider[]):
 			lines.push(`  invalid preset kept in the file, not registered: ${invalid.modelId}@${invalid.slug} (${invalid.error})`);
 		}
 	}
+	lines.push(...family);
 	return lines;
 }

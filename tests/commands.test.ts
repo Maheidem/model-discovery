@@ -93,3 +93,29 @@ test("url shorthand still wins over unknown words", () => {
 	const intent = parseDiscoverArgs("http://127.0.0.1:8123/v1");
 	assert.equal(intent.kind, "add");
 });
+
+test("model settings parse: defaults, family, hidden, and auto for vision and reasoning", () => {
+	ck(parseDiscoverArgs("model m defaults off"), { kind: "model-set", modelId: "m", field: "defaults", value: "off" });
+	ck(parseDiscoverArgs("model m hidden on --source local"), { kind: "model-set", modelId: "m", field: "hidden", value: "on", source: "local" });
+	ck(parseDiscoverArgs("model m family qwen3.8"), { kind: "model-set", modelId: "m", field: "family", value: "qwen3.8" });
+	ck(parseDiscoverArgs("model m family auto"), { kind: "model-set", modelId: "m", field: "family", value: "auto" });
+	ck(parseDiscoverArgs("model m family none --source local"), { kind: "model-set", modelId: "m", field: "family", value: "none", source: "local" });
+	ck(parseDiscoverArgs("model m --source local"), { kind: "invalid", message: "Unknown model field: --source" });
+	ck(parseDiscoverArgs("model m vision auto"), { kind: "model-set", modelId: "m", field: "vision", value: "auto" });
+	ck(parseDiscoverArgs("model m reasoning auto --source local"), { kind: "model-set", modelId: "m", field: "reasoning", value: "auto", source: "local" });
+	for (const args of ["model m defaults auto", "model m hidden auto", "model m hidden", "model m family", "model m family --source local", "model m vision maybe"]) {
+		assert.equal(parseDiscoverArgs(args).kind, "invalid", `"${args}" must be rejected`);
+	}
+});
+
+test("preset defaults and families update parse", () => {
+	ck(parseDiscoverArgs("preset defaults local Qwen3.8-27B"), { kind: "preset-defaults", source: "local", modelId: "Qwen3.8-27B", confirmed: false });
+	ck(parseDiscoverArgs("preset defaults local Qwen3.8-27B --yes"), { kind: "preset-defaults", source: "local", modelId: "Qwen3.8-27B", confirmed: true });
+	assert.equal(parseDiscoverArgs("preset defaults local").kind, "invalid");
+	ck(parseDiscoverArgs("families update"), { kind: "families-update" });
+	assert.equal(parseDiscoverArgs("families").kind, "invalid");
+	const top = (completeDiscoverArgs("", ["local"]) ?? []).map((c) => c.value);
+	for (const expected of ["families update", "preset defaults ", "preset defaults local "]) {
+		assert.ok(top.includes(expected), `completions must include "${expected}"`);
+	}
+});
